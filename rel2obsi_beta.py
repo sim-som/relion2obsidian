@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import os
 import json
 import argparse
@@ -977,6 +978,24 @@ def copy_logfile_pdf(job_dir, job_name, output_dir):
         logger.error(f"Error copying logfile.pdf for {job_name}: {str(e)}")
         return None
 
+def extract_persistent_notes(note_path):
+    """Extract the Persistent Notes section from an existing note"""
+    if not os.path.exists(note_path):
+        return ""
+
+    try:
+        with open(note_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+
+        # Find the Persistent Notes section
+        match = re.search(r'# Persistent Notes\n(.*?)(?=\n# |\Z)', content, re.DOTALL)
+        if match:
+            return match.group(1).strip()
+        return ""
+    except Exception as e:
+        logger.warning(f"Error extracting persistent notes from {note_path}: {str(e)}")
+        return ""
+
 def update_note_with_backward_link(note_path, new_job_filename, new_job_name, job_type):
     """Update an existing note with a link to a job that uses it as input"""
     if not os.path.exists(note_path):
@@ -988,28 +1007,28 @@ def update_note_with_backward_link(note_path, new_job_filename, new_job_name, jo
             content = f.read()
         
         # Check if the Jobs that use this section exists
-        if "## Jobs that use this" not in content:
+        if "# Jobs that use this" not in content:
             # Add the section if it doesn't exist
-            content += "\n\n## Jobs that use this\n"
+            content += "\n\n# Jobs that use this\n"
         
         # Add the link if it doesn't already exist
         link_text = f"- [[{new_job_filename.replace('.md', '')}|{job_type}: {new_job_name}]]"
         if link_text not in content:
             # Find the section and append the link
-            sections = re.split(r'(?=^## )', content, flags=re.MULTILINE)
+            sections = re.split(r'(?=^# )', content, flags=re.MULTILINE)
             for i, section in enumerate(sections):
-                if section.startswith("## Jobs that use this"):
-                    if section.strip() == "## Jobs that use this":
+                if section.startswith("# Jobs that use this"):
+                    if section.strip() == "# Jobs that use this":
                         # If the section is empty
-                        sections[i] = f"## Jobs that use this\n{link_text}\n"
+                        sections[i] = f"# Jobs that use this\n{link_text}\n"
                     else:
                         # Append to existing content
                         sections[i] = f"{section.rstrip()}\n{link_text}\n"
                     break
             
             # If we didn't find the section, add it
-            if not any(s.startswith("## Jobs that use this") for s in sections):
-                sections.append(f"## Jobs that use this\n{link_text}\n")
+            if not any(s.startswith("# Jobs that use this") for s in sections):
+                sections.append(f"# Jobs that use this\n{link_text}\n")
             
             # Join the sections back together
             content = ''.join(sections)
@@ -1079,7 +1098,7 @@ def batch_generate_class2d_images(class2d_jobs, output_dir, force=False, max_wor
     
     return class2d_montages
 
-def create_obsidian_notes(jobs, output_dir, force=False):
+def create_obsidian_notes(jobs, output_dir, project_dir, force=False, plot=False):
     """Create or update Obsidian notes for all jobs"""
     try:
         os.makedirs(output_dir, exist_ok=True)
@@ -1150,20 +1169,28 @@ def create_obsidian_notes(jobs, output_dir, force=False):
                 if logfile_path:
                     job['details']['logfile_pdf'] = logfile_path
         
-        # Generate Class2D images before creating notes (parallel processing)
-        logger.info("Checking Class2D visualizations...")
-        class2d_jobs = [j for j in all_jobs.values() if j['type'] == 'Class2D']
-        class2d_montages = batch_generate_class2d_images(class2d_jobs, output_dir, force, max_workers=3)
+        # Generate visualizations only if --plot flag is set
+        class2d_montages = {}
+        refine3d_visualizations = {}
+        class3d_visualizations = {}
 
-        # Generate Refine3D visualizations
-        logger.info("Checking Refine3D visualizations...")
-        refine3d_jobs = [j for j in all_jobs.values() if j['type'] == 'Refine3D']
-        refine3d_visualizations = batch_generate_refine3d_visualizations(refine3d_jobs, output_dir, force, max_workers=2)
-        
-        # Generate Class3D visualizations
-        logger.info("Checking Class3D visualizations...")
-        class3d_jobs = [j for j in all_jobs.values() if j['type'] == 'Class3D']
-        class3d_visualizations = batch_generate_class3d_visualizations(class3d_jobs, output_dir, force, max_workers=2)
+        if plot:
+            # Generate Class2D images before creating notes (parallel processing)
+            logger.info("Checking Class2D visualizations...")
+            class2d_jobs = [j for j in all_jobs.values() if j['type'] == 'Class2D']
+            class2d_montages = batch_generate_class2d_images(class2d_jobs, output_dir, force, max_workers=3)
+
+            # Generate Refine3D visualizations
+            logger.info("Checking Refine3D visualizations...")
+            refine3d_jobs = [j for j in all_jobs.values() if j['type'] == 'Refine3D']
+            refine3d_visualizations = batch_generate_refine3d_visualizations(refine3d_jobs, output_dir, force, max_workers=2)
+
+            # Generate Class3D visualizations
+            logger.info("Checking Class3D visualizations...")
+            class3d_jobs = [j for j in all_jobs.values() if j['type'] == 'Class3D']
+            class3d_visualizations = batch_generate_class3d_visualizations(class3d_jobs, output_dir, force, max_workers=2)
+        else:
+            logger.info("Skipping visualizations (use --plot to generate)")
 
         # First, create all notes to ensure they exist for cross-linking
         logger.info(f"Creating notes for {len(all_jobs)} jobs...")
@@ -1199,6 +1226,9 @@ def create_obsidian_notes(jobs, output_dir, force=False):
                 logger.info(f"Job {job['name']} is now complete!")
                 
             try:
+                # Extract persistent notes before overwriting
+                persistent_notes = extract_persistent_notes(note_path)
+
                 with open(note_path, "w", encoding='utf-8') as f:
                     # Add YAML frontmatter
                     f.write("---\n")
@@ -1207,9 +1237,16 @@ def create_obsidian_notes(jobs, output_dir, force=False):
                     
                     # Add tags from job details or defaults
                     tags = job['details'].get('tags', ["relion", job['type'].lower(), "cryo-em"])
-                    # Add output folder name as tag
-                    output_folder_name = os.path.basename(os.path.normpath(output_dir))
-                    tags.append(output_folder_name)
+                    # Add IN_PROGRESS as first tag if job is not complete
+                    if not job_is_complete:
+                        tags.insert(0, "IN_PROGRESS")
+                    # Add job name as tag (e.g., "job010")
+                    job_id = job['name'].split('/')[-1]
+                    tags.append(job_id)
+                    # Add parent folder of project directory as tag
+                    project_parent_name = Path(project_dir).resolve().parent.name.replace(" ", "_")
+                    if project_parent_name:
+                        tags.append(project_parent_name)
                     # Convert tags list to string
                     tags_str = ', '.join([f'"{tag}"' for tag in tags])
                     f.write(f"tags: [{tags_str}]\n")
@@ -1247,10 +1284,15 @@ def create_obsidian_notes(jobs, output_dir, force=False):
                             f.write(f"items: {job['details']['item_count']}\n")
 
                     f.write("---\n\n")
-                    
+
+                    # Persistent Notes section (preserved across regenerations)
+                    f.write("# Persistent Notes\n\n")
+                    if persistent_notes:
+                        f.write(f"{persistent_notes}\n\n")
+
                     # Job header
                     #f.write(f"# {job['name']}: {job['type']}\n\n")
-                    
+
                     # Add Refine3D visualization if available
                     if job['type'] == 'Refine3D':
                         vis_path = refine3d_visualizations.get(job['name'])
@@ -1264,7 +1306,7 @@ def create_obsidian_notes(jobs, output_dir, force=False):
                             f.write(f"![Class3D Analysis]({vis_path})\n\n")
                     
                     # Basic info section
-                    f.write("## Job Information\n\n")
+                    f.write("# Job Information\n\n")
                     f.write(f"- **Job Type**: {job['type']}\n")
                     f.write(f"- **Job Name**: {job['name']}\n")
                     f.write(f"- **Path**: `{job['details'].get('job_path', '')}`\n")
@@ -1277,7 +1319,7 @@ def create_obsidian_notes(jobs, output_dir, force=False):
                     # Input jobs section if applicable
                     input_jobs = job['details'].get('input_jobs', [])
                     if input_jobs:
-                        f.write("## Input Jobs\n\n")
+                        f.write("# Input Jobs\n\n")
                         for input_job_name in input_jobs:
                             parts = input_job_name.replace(" ", "").rstrip("/").split("/")
                             if len(parts) == 2:
@@ -1293,7 +1335,7 @@ def create_obsidian_notes(jobs, output_dir, force=False):
                     # Output jobs section (Jobs that use this)
                     output_jobs = job['details'].get('output_jobs', [])
                     if output_jobs:
-                        f.write("## Jobs that use this\n\n")
+                        f.write("# Jobs that use this\n\n")
                         for out_job_name in output_jobs:
                             # Beispiel: "ManualPick/job005"
                             # -> wir extrahieren type="ManualPick", short="job005"
@@ -1311,13 +1353,13 @@ def create_obsidian_notes(jobs, output_dir, force=False):
                     
                     # # User notes section if available
                     # if 'user_notes' in job['details'] and job['details']['user_notes'].strip():
-                    #     f.write("## User Notes\n\n")
+                    #     f.write("# User Notes\n\n")
                     #     f.write("```\n")
                     #     f.write(job['details']['user_notes'])
                     #     f.write("\n```\n\n")
                     
                     # # Details section
-                    # f.write("## Additional Details\n\n")
+                    # f.write("# Additional Details\n\n")
                     # for key, value in job["details"].items():
                     #     if key not in ["settings", "input_jobs", "job_name", "job_path", "user_notes", "tags", "creation_date"]:
                     #         f.write(f"- **{key}**: {value}\n")
@@ -1333,7 +1375,7 @@ def create_obsidian_notes(jobs, output_dir, force=False):
                         k: v for k, v in job["details"].get("settings", {}).items() if k in highlighted_settings
                     }
                     if highlighted:
-                        f.write("## Highlighted Settings\n\n")
+                        f.write("# Highlighted Settings\n\n")
                         f.write("| Setting | Value |\n")
                         f.write("|---------|-------|\n")
                         for key, value in highlighted.items():
@@ -1342,7 +1384,7 @@ def create_obsidian_notes(jobs, output_dir, force=False):
 
                     # All settings in a collapsible section
                     if "settings" in job["details"] and job["details"]["settings"]:
-                        f.write("## All Settings\n\n")
+                        f.write("# All Settings\n\n")
                         f.write("| Setting | Value |\n")
                         f.write("|---------|-------|\n")
                         for key, value in job["details"]["settings"].items():
@@ -1354,7 +1396,7 @@ def create_obsidian_notes(jobs, output_dir, force=False):
 
                     # Special sections for specific job types
                     if job['type'] == "Class2D":
-                        f.write("## 2D Class Averages\n\n")
+                        f.write("# 2D Class Averages\n\n")
                         montage_path = class2d_montages.get(job['name'])
                         if montage_path:
                             f.write(f"![Class2D Montage]({montage_path})\n\n")
@@ -1363,12 +1405,12 @@ def create_obsidian_notes(jobs, output_dir, force=False):
                     
                     elif job['type'] == "CtfFind":
                         if 'logfile_pdf' in job['details']:
-                            f.write("## CTF Estimation Logfile\n\n")
+                            f.write("# CTF Estimation Logfile\n\n")
                             f.write(f"![CTF Logfile]({job['details']['logfile_pdf']})\n\n")
                     
                     elif job['type'] == "MotionCorr":
                         if 'logfile_pdf' in job['details']:
-                            f.write("## Motion Correction Logfile\n\n")
+                            f.write("# Motion Correction Logfile\n\n")
                             f.write(f"![Motion Correction Logfile]({job['details']['logfile_pdf']})\n\n")
                         
                         # Find the PostProcess job that might be associated with this refinement
@@ -1381,7 +1423,7 @@ def create_obsidian_notes(jobs, output_dir, force=False):
                         ]
                         
                         if possible_postproc:
-                            f.write("## Associated PostProcess Jobs\n\n")
+                            f.write("# Associated PostProcess Jobs\n\n")
                             for pp_job in possible_postproc:
                                 pp_filename = get_job_note_filename(pp_job)
                                 f.write(f"- [[{pp_filename.replace('.md', '')}|PostProcess: {pp_job['name']}]]\n")
@@ -1389,7 +1431,7 @@ def create_obsidian_notes(jobs, output_dir, force=False):
                         
                     # User notes section at the end if available
                     if 'user_notes' in job['details'] and job['details']['user_notes'].strip():
-                        f.write("## RELION Command\n\n")
+                        f.write("# RELION Command\n\n")
                         f.write("```\n")
                         f.write(job['details']['user_notes'])
                         f.write("\n```\n\n")
@@ -1451,14 +1493,14 @@ def create_index_file(all_jobs, output_dir):
                 job_types[job_type].append(job)
             
             # Add table of contents
-            f.write("## Job Types\n\n")
+            f.write("# Job Types\n\n")
             for job_type in sorted(job_types.keys()):
                 f.write(f"- [{job_type}](#{job_type.lower()})\n")
             f.write("\n")
             
             # Add sections for each job type
             for job_type in sorted(job_types.keys()):
-                f.write(f"## {job_type}\n\n")
+                f.write(f"# {job_type}\n\n")
                 
                 # Sort jobs by name
                 jobs = sorted(job_types[job_type], key=lambda j: j['name'])
@@ -1479,7 +1521,7 @@ def create_index_file(all_jobs, output_dir):
                 f.write("\n")
             
             # Add tag section for filtering
-            f.write("## Tags\n\n")
+            f.write("# Tags\n\n")
             
             # Collect all unique tags
             all_tags = set()
@@ -1540,7 +1582,8 @@ def main():
     parser = argparse.ArgumentParser(description="Generate Obsidian notes from RELION project jobs.")
     parser.add_argument("-i", "--project_dir", required=True, help="Path to the RELION project directory.")
     parser.add_argument("-o", "--output_dir", required=True, help="Path to the output directory for Obsidian notes.")
-    parser.add_argument("--force", action="store_true", help="Force regeneration of existing notes.")
+    parser.add_argument("--force", action="store_true", help="Force regeneration of existing notes. Persistent Notes sections are preserved.")
+    parser.add_argument("--plot", action="store_true", help="Generate visualizations (Class2D montages, Refine3D/Class3D analysis plots).")
     parser.add_argument("--verbose", action="store_true", help="Enable verbose logging.")
     
     args = parser.parse_args()
@@ -1548,7 +1591,14 @@ def main():
     # Set log level based on verbosity
     if args.verbose:
         logger.setLevel(logging.DEBUG)
-    
+
+    # Confirm before force regeneration
+    if args.force:
+        response = input("WARNING: --force will overwrite all existing notes (Persistent Notes sections are preserved). Continue? [y/N]: ")
+        if response.lower() != 'y':
+            logger.info("Aborted by user.")
+            sys.exit(0)
+
     try:
         # Show script information
         logger.info(f"Relion to Obsidian Converter")
@@ -1561,7 +1611,7 @@ def main():
         logger.info(f"Found {len(jobs)} jobs.")
         
         # Create or update notes with links between jobs
-        create_obsidian_notes(jobs, args.output_dir, args.force)
+        create_obsidian_notes(jobs, args.output_dir, args.project_dir, args.force, args.plot)
         logger.info(f"Obsidian notes created in {args.output_dir}")
         logger.info("Open this directory as an Obsidian vault to view the job structure.")
         
