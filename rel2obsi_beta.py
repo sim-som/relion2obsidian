@@ -1293,16 +1293,20 @@ def create_obsidian_notes(jobs, output_dir, project_dir, force=False, plot=False
                     # Job header
                     #f.write(f"# {job['name']}: {job['type']}\n\n")
 
+                    # Section for automatically generated plots
+
                     # Add Refine3D visualization if available
                     if job['type'] == 'Refine3D':
                         vis_path = refine3d_visualizations.get(job['name'])
                         if vis_path:
+                            f.write("# Plots")
                             f.write(f"![Refine3D Analysis]({vis_path})\n\n")
                     
                     # Add Class3D visualization if available
                     if job['type'] == 'Class3D':
                         vis_path = class3d_visualizations.get(job['name'])
                         if vis_path:
+                            f.write("# Plots")
                             f.write(f"![Class3D Analysis]({vis_path})\n\n")
                     
                     # Basic info section
