@@ -6,11 +6,14 @@ from tqdm import tqdm
 import numpy as np
 from matplotlib import pyplot as plt
 from matplotlib.colors import LogNorm
+from matplotlib.backends.backend_agg import FigureCanvasAgg
+from matplotlib.figure import Figure
+from matplotlib.patheffects import withStroke
+from matplotlib_scalebar.scalebar import ScaleBar
 from natsort import natsorted
 import mrcfile
 import starfile
-from skimage.util import montage, img_as_ubyte
-from PIL import Image, ImageDraw, ImageFont
+from skimage.util import img_as_ubyte
 from pathlib import Path
 import re
 import datetime
@@ -333,58 +336,222 @@ def normalize(img):
         logger.error(f"Error normalizing image: {str(e)}")
         return img  # Return original image if normalization fails
 
-def add_text(gray_image_array, top_text="Top Text", bottom_text="Bottom Text"):
-    """Add text to an image"""
+def sort_by_metadata(class2d_stk, classes_metadf, attribute="rlnClassDistribution", ascending=False):
+    """Sort by one column in the 2D classes metadata (e.g. ClassDistribution, EstimatedResolution)
+
+    Args:
+        class2d_stk (np.ndarray): Stack of 2D class images
+        classes_metadf (pandas.DataFrame): Metadata for classes
+        attribute (str, optional): Metadata attribute to sort by. Defaults to "rlnClassDistribution".
+        ascending (bool, optional): Sort in ascending order. Defaults to False.
+
+    Returns:
+        tuple: Sorted image stack and sorted metadata DataFrame
+    """
+    assert attribute in classes_metadf.columns
+
+    # Generate list of 2D-classes from the stack:
+    classes = [class2d_stk[i,:,:] for i in range(class2d_stk.shape[0])]
+    # Sort metadata according to attribute in ascending or descending order:
+    sorted_df = classes_metadf.sort_values(attribute, ascending=ascending)
+    # Sort the classes list by the index of the sorted (Meta-)DataFrame
+    sorted_classes = [classes[idx] for idx in sorted_df.index]
+    # generate sorted image stack from sorted list of 2D-classes:
+    sorted_class2d_stk = np.stack(sorted_classes)
+
+    return sorted_class2d_stk, sorted_df
+
+def get_class_num(rlnReferenceImage: str):
+    """Extract class number from reference image string"""
+    return int(rlnReferenceImage.split("@")[0].strip("0"))
+
+def discard_empty_classes(classes_stk: np.ndarray) -> np.ndarray:
+    """Remove empty (all zeros) classes from the stack"""
+    classes_list = [classes_stk[i] for i in range(classes_stk.shape[0])]
+    not_empty_classes_list = []
+    for im in classes_list:
+        if not np.equal(im, 0).all():
+            not_empty_classes_list.append(im)
+
+    return np.stack(not_empty_classes_list)
+
+def draw_text_on_image(img, top_text, bottom_text):
+    """Draw text directly on an image using matplotlib's Agg backend
+
+    Args:
+        img (np.ndarray): Normalized image array (values between 0-1)
+        top_text (str): Text to display at the top
+        bottom_text (str): Text to display at the bottom
+
+    Returns:
+        np.ndarray: Image with text overlay
+    """
     try:
-        gray_image_array = normalize(gray_image_array)
-        gray_image_array = img_as_ubyte(gray_image_array)
+        # Make sure we're using normalized image
+        img = normalize(img)
 
-        image = Image.fromarray(gray_image_array).convert('RGB')
-        draw = ImageDraw.Draw(image)
-        font = ImageFont.load_default()
-        text_color = (0, 255, 0)
+        # Get image dimensions
+        h, w = img.shape
 
-        image_width, image_height = image.size
+        # Create a figure with Agg backend (works in any environment)
+        fig = Figure(figsize=(w/100, h/100), dpi=100)
+        canvas = FigureCanvasAgg(fig)
+        ax = fig.add_subplot(111)
 
-        # Calculate the bounding box for the top text
-        top_text_bbox = draw.textbbox((0, 0), top_text, font=font)
-        text_width = top_text_bbox[2] - top_text_bbox[0]
-        text_height = top_text_bbox[3] - top_text_bbox[1]
+        # Display the image
+        ax.imshow(img, cmap='gray')
 
-        top_text_position = ((image_width - text_width) // 2, 10)
-        draw.text(top_text_position, top_text, fill=text_color, font=font)
+        # Add text with path effects for better visibility
+        path_effects = [withStroke(linewidth=2, foreground='black')]
 
-        # Calculate the bounding box for the bottom text
-        bottom_text_bbox = draw.textbbox((0, 0), bottom_text, font=font)
-        text_width = bottom_text_bbox[2] - bottom_text_bbox[0]
-        text_height = bottom_text_bbox[3] - bottom_text_bbox[1]
+        ax.text(0.5, 0.05, top_text, color='lime', ha='center', va='bottom',
+                transform=ax.transAxes, fontsize=12, path_effects=path_effects)
 
-        bottom_text_position = ((image_width - text_width) // 2, image_height - text_height - 10)
-        draw.text(bottom_text_position, bottom_text, fill=text_color, font=font)
+        ax.text(0.5, 0.95, bottom_text, color='lime', ha='center', va='top',
+                transform=ax.transAxes, fontsize=12, path_effects=path_effects)
 
-        return np.array(image)
-        
+        # Remove axes
+        ax.axis('off')
+        fig.subplots_adjust(left=0, right=1, top=1, bottom=0, wspace=0, hspace=0)
+
+        # Draw to canvas
+        canvas.draw()
+
+        # Convert to numpy array (backend agnostic)
+        buf = canvas.buffer_rgba()
+        img_array = np.asarray(buf)
+
+        # Convert RGBA to RGB
+        img_array = img_array[:, :, :3]
+
+        plt.close(fig)
+        return img_array
+
     except Exception as e:
         logger.error(f"Error adding text to image: {str(e)}")
-        return gray_image_array  # Return original image if text addition fails
+        # Return grayscale image as RGB fallback
+        img = normalize(img)
+        return np.stack([img_as_ubyte(img)]*3, axis=-1)
 
-def make_montage(stk, ncols=10):
-    """Create a montage of images"""
+def make_montage_grid(images, grid_shape):
+    """Create a montage from a list of images
+
+    Args:
+        images (list): List of images to combine
+        grid_shape (tuple): Tuple of (rows, cols)
+
+    Returns:
+        np.ndarray: Combined montage image
+    """
     try:
-        nrows = int(np.ceil(stk.shape[0] / ncols))
-        return montage(stk, grid_shape=(nrows, ncols), channel_axis=-1)
+        n_images = len(images)
+        rows, cols = grid_shape
+
+        # Get image dimensions (assuming all are the same)
+        h, w, c = images[0].shape
+
+        # Create output array
+        montage_img = np.zeros((h * rows, w * cols, c), dtype=np.uint8)
+
+        # Fill in the montage
+        for i in range(min(n_images, rows * cols)):
+            r = i // cols
+            col = i % cols
+
+            montage_img[r*h:(r+1)*h, col*w:(col+1)*w] = images[i]
+
+        return montage_img
     except Exception as e:
         logger.error(f"Error creating montage: {str(e)}")
         return None
 
-def generate_class2d_image(job_dir, out_dir, iteration=-1):
-    """Generate montage image from Class2D job results"""
+def create_classes_grid(images, class_numbers, num_particles, est_res, n_rows, n_cols,
+                       title=None, scale_bar=True, angpix=None, annotate=True):
+    """Create a grid of 2D class images using custom montage function
+
+    Args:
+        images (np.ndarray): Stack of class images
+        class_numbers (list): List of class numbers
+        num_particles (list): List of particle counts for each class
+        est_res (list): List of estimated resolutions for each class
+        n_rows (int): Number of rows in the grid
+        n_cols (int): Number of columns in the grid
+        title (str, optional): Title for the figure window. Defaults to None.
+        scale_bar (bool, optional): Whether to add a scale bar. Defaults to True.
+        angpix (float, optional): Pixel size in Angstroms. Required if scale_bar is True.
+        annotate (bool, optional): Whether to annotate each class with class number, particle count, and resolution. Defaults to True.
+
+    Returns:
+        tuple: Figure and final montage image
+    """
+    # Process each image with text
+    processed_images = []
+    for img, class_num, n_part, resolution in zip(images, class_numbers, num_particles, est_res):
+        if annotate:
+            top_text = f"{class_num} ({n_part})"
+            bottom_text = f"{resolution:.1f} Å"
+
+            # Draw text directly on the image
+            img_with_text = draw_text_on_image(img, top_text, bottom_text)
+        else:
+            # No annotation - just normalize and convert to RGB
+            img_normalized = normalize(img)
+            # Convert grayscale to RGB by stacking
+            img_with_text = np.stack([img_normalized]*3, axis=-1)
+            # Convert to uint8 for consistency with annotated version
+            img_with_text = (img_with_text * 255).astype(np.uint8)
+        processed_images.append(img_with_text)
+
+    # Create the montage
+    montage_img = make_montage_grid(processed_images, (n_rows, n_cols))
+
+    # Create a figure to display the montage
+    fig = plt.figure(figsize=(12, 12 * n_rows / n_cols), num=title)
+    ax = plt.gca()
+    ax.imshow(montage_img)
+
+    # Add scale bar if requested
+    if scale_bar and angpix is not None:
+        # Convert angpix from Angstroms to nm for the scalebar
+        angpix_nm = angpix / 10.0
+
+        # Add scalebar using matplotlib-scalebar package
+        scalebar = ScaleBar(
+            angpix_nm,             # Scale in nm/pixel
+            'nm',                  # Unit
+            length_fraction=0.1,   # Length of scalebar as fraction of axes
+            location='upper right', # Position
+            color='black',         # Color of the scalebar
+            frameon=True,
+            box_color="white",
+            scale_loc='left',       # Location of the scale text
+            rotation="vertical",
+            bbox_to_anchor=(0, 1),
+            bbox_transform=ax.transAxes,
+        )
+        ax.add_artist(scalebar)
+
+    # Remove axes
+    ax.axis('off')
+    plt.tight_layout(pad=0)
+
+    return fig, montage_img
+
+def generate_class2d_image(job_dir, out_dir, iteration=-1, scale_bar=True, annotate=True):
+    """Generate montage image from Class2D job results with improved visualization.
+
+    Features:
+    - Scale bar with proper units
+    - Class numbers alongside particle counts
+    - Better text rendering with path effects for visibility
+    - Proper grid layout
+    """
     try:
         job_dir = Path(job_dir)
         # If job_dir is a file path, get the parent directory
         if job_dir.is_file():
             job_dir = job_dir.parent
-            
+
         class2d_dir = job_dir
         job_nr = job_dir.name
 
@@ -397,71 +564,84 @@ def generate_class2d_image(job_dir, out_dir, iteration=-1):
             logger.warning(f"Missing required files for Class2D visualization in {job_dir}")
             return None
 
-
-        #iteration = iteration if iteration >= 0 else min(
-        #    len(model_star_files), len(particle_star_files), len(mrc_stack_files)
-        #) - 1
-
-
         # Check if job is still running by looking for a RELION_JOB_EXIT_SUCCESS file
         success_file = class2d_dir / "RELION_JOB_EXIT_SUCCESS"
         job_is_incomplete = not success_file.exists()
-        
+
         if job_is_incomplete:
             logger.warning(f"Class2D job {job_nr} appears to be still running or incomplete - will create visualization anyway")
-        
+
         iteration = iteration if iteration >= 0 else min(
             len(model_star_files), len(particle_star_files), len(mrc_stack_files)
         ) - 1
 
-        # Read only required columns to save memory
+        # Read data files
         try:
             model_data = starfile.read(model_star_files[iteration])
             particles_data = starfile.read(particle_star_files[iteration])
-            
+
             with mrcfile.open(mrc_stack_files[iteration], permissive=True) as f:
                 mrc_stk = f.data
+                angpix = float(f.voxel_size.x)
         except Exception as e:
             logger.error(f"Error reading Class2D data files: {str(e)}")
             return None
 
-        # Reduce dataframe and convert to numpy to save memory
+        # Get classes metadata
         classes_df = model_data["model_classes"]
         total_particles = particles_data["particles"].shape[0]
 
-        # Select required columns and convert to numpy arrays
-        class_distribution = classes_df["rlnClassDistribution"].to_numpy()
-        estimated_resolution = classes_df["rlnEstimatedResolution"].to_numpy()
-        number_of_particles = (class_distribution * total_particles).astype(int)
+        # Add number of particles to classes dataframe
+        classes_df["NumberOfParticles"] = np.around(
+            classes_df["rlnClassDistribution"] * total_particles, 0
+        ).astype(int)
 
-        # Sort indices by descending class distribution
-        sorted_indices = np.argsort(-class_distribution)
+        # Sort by class distribution (descending)
+        mrc_stk_sorted, classes_df_sorted = sort_by_metadata(
+            mrc_stk, classes_df, attribute="rlnClassDistribution", ascending=False
+        )
 
-        # Sort mrc stack incrementally to avoid creating a large sorted copy
-        mrc_stk_sorted = np.empty_like(mrc_stk)
-        for i, idx in enumerate(sorted_indices):
-            mrc_stk_sorted[i] = mrc_stk[idx]
+        # Filter out empty classes
+        classes_df_sorted = classes_df_sorted[classes_df_sorted["rlnClassDistribution"] != 0]
+        mrc_stk_sorted = discard_empty_classes(mrc_stk_sorted)
 
-        # Generate labeled images incrementally
-        labeled_images = []
-        for img, num, res in zip(
-            mrc_stk_sorted, number_of_particles[sorted_indices], estimated_resolution[sorted_indices]
-        ):
-            labeled_images.append(add_text(img, str(num), f"{res:.2f} A"))
+        # Extract class numbers from reference image strings
+        class_numbers = [get_class_num(ref_im) for ref_im in classes_df_sorted["rlnReferenceImage"]]
 
-        # Stack labeled images and create a montage
-        montage_img = make_montage(np.stack(labeled_images))
-        if montage_img is None:
-            return None
+        # Calculate grid dimensions
+        num_classes = classes_df_sorted.shape[0]
+        n_rows = int(np.ceil(np.sqrt(num_classes)))
+        n_cols = int(np.ceil(num_classes / n_rows))
 
-        # Save the montage to a file
+        MAX_NCOLS = 8
+        if n_cols > MAX_NCOLS:
+            n_cols = MAX_NCOLS
+            n_rows = int(np.ceil(num_classes / n_cols))
+
+        logger.debug(f"Creating Class2D grid: {num_classes} classes in {n_rows}x{n_cols} layout")
+
+        # Create the figure with grid of class images
+        fig, montage_img = create_classes_grid(
+            mrc_stk_sorted,
+            class_numbers,
+            classes_df_sorted["NumberOfParticles"],
+            classes_df_sorted["rlnEstimatedResolution"],
+            n_rows, n_cols,
+            title=f"Class2D {job_nr} It. {iteration}",
+            scale_bar=scale_bar,
+            angpix=angpix,
+            annotate=annotate
+        )
+
+        # Save the figure
         rel_montage_path = f"assets/Class2D_{job_nr}_montage_It_{iteration}.png"
         output_path = Path(out_dir) / rel_montage_path
-        
+
         # Create assets directory if it doesn't exist
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
-        
-        plt.imsave(output_path, montage_img, cmap="gray")
+
+        fig.savefig(output_path, dpi=300, bbox_inches="tight", pad_inches=0.5)
+        plt.close(fig)
         logger.info(f"Created Class2D montage: {output_path}")
 
         return rel_montage_path
@@ -1298,15 +1478,23 @@ def create_obsidian_notes(jobs, output_dir, project_dir, force=False, plot=False
                     #f.write(f"# {job['name']}: {job['type']}\n\n")
 
                     # Section for automatically generated plots
+                    ## Class2D:
+                    if job['type'] == "Class2D":
+                        f.write("# 2D Class Averages\n\n")
+                        montage_path = class2d_montages.get(job['name'])
+                        if montage_path:
+                            f.write(f"![Class2D Montage]({montage_path})\n\n")
+                        else:
+                            f.write("*Class averages could not be generated*\n\n")
 
-                    # Add Refine3D visualization if available
+                    ## Add Refine3D visualization if available
                     if job['type'] == 'Refine3D':
                         vis_path = refine3d_visualizations.get(job['name'])
                         if vis_path:
                             f.write("# Plots")
                             f.write(f"![Refine3D Analysis]({vis_path})\n\n")
                     
-                    # Add Class3D visualization if available
+                    ## Add Class3D visualization if available
                     if job['type'] == 'Class3D':
                         vis_path = class3d_visualizations.get(job['name'])
                         if vis_path:
@@ -1403,13 +1591,7 @@ def create_obsidian_notes(jobs, output_dir, project_dir, force=False, plot=False
                             f.write(f"| `{key}` | `{value_str}` |\n")
 
                     # Special sections for specific job types
-                    if job['type'] == "Class2D":
-                        f.write("# 2D Class Averages\n\n")
-                        montage_path = class2d_montages.get(job['name'])
-                        if montage_path:
-                            f.write(f"![Class2D Montage]({montage_path})\n\n")
-                        else:
-                            f.write("*Class averages could not be generated*\n\n")
+
                     
                     elif job['type'] == "CtfFind":
                         if 'logfile_pdf' in job['details']:
