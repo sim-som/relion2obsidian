@@ -1563,8 +1563,16 @@ def create_obsidian_notes(jobs, output_dir, project_dir, force=False, plot=False
 
                     # Highlighted settings section
                     highlighted_settings = [
-                        "o", "iter", "blush", "sym", "helical_twist_initial",
-                        "helical_rise_initial", "helical_symmetry_search", "solvent_mask"
+                        "iter", 
+                        "K", "tau2_fudge",
+                        "particle_diameter", "helical_outer_diameter",
+                        "no_init_blobs", "ctf",         # Special settings for classifying amyloids/fibrils
+                        "psi_step", "oversampling", "healpix_order",
+                        "ini_high",     # initial low pass filter
+                        "sym", "helical_twist_initial",
+                        "helical_rise_initial", "helical_symmetry_search",
+                        "solvent_mask",
+                        "blush"
                     ]
                     
                     highlighted = {
