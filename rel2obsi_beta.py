@@ -906,10 +906,12 @@ def generate_class3d_visualization(job_dir, out_dir, job_name):
         logger.debug(traceback.format_exc())
         return None
     
-def batch_generate_refine3d_visualizations(refine3d_jobs, output_dir, force=False, max_workers=2):
+def batch_generate_refine3d_visualizations(refine3d_jobs, output_dir, force=False, max_workers=2, update_incomplete=False, incomplete_jobs=None):
     """Generate Refine3D visualizations in parallel"""
     refine3d_visualizations = {}
-    
+    if incomplete_jobs is None:
+        incomplete_jobs = set()
+
     def process_single_refine3d(job):
         """Process a single Refine3D job and return its visualization path"""
         try:
@@ -917,22 +919,30 @@ def batch_generate_refine3d_visualizations(refine3d_jobs, output_dir, force=Fals
             if job_dir.is_file():
                 job_dir = job_dir.parent
             job_nr = job_dir.name
-            
+
             expected_vis_path = f"assets/Refine3D_{job_nr}_analysis.png"
             full_vis_path = Path(output_dir) / expected_vis_path
-            
-            if full_vis_path.exists() and not force:
+
+            # Check if job is currently incomplete or was previously incomplete
+            success_file = job_dir / "RELION_JOB_EXIT_SUCCESS"
+            job_is_complete = success_file.exists()
+            should_regenerate_for_incomplete = update_incomplete and (
+                not job_is_complete or  # Currently running
+                job['name'] in incomplete_jobs  # Was incomplete, now complete
+            )
+
+            if full_vis_path.exists() and not force and not should_regenerate_for_incomplete:
                 logger.debug(f"Refine3D visualization already exists: {expected_vis_path}")
                 return job['name'], expected_vis_path
-            
+
             # Generate new visualization
             vis_path = generate_refine3d_visualization(
-                job["details"].get("job_path", ""), 
-                output_dir, 
+                job["details"].get("job_path", ""),
+                output_dir,
                 job['name']
             )
             return job['name'], vis_path
-            
+
         except Exception as e:
             logger.error(f"Error in parallel processing of Refine3D {job['name']}: {str(e)}")
             return job['name'], None
@@ -951,10 +961,12 @@ def batch_generate_refine3d_visualizations(refine3d_jobs, output_dir, force=Fals
     
     return refine3d_visualizations
 
-def batch_generate_class3d_visualizations(class3d_jobs, output_dir, force=False, max_workers=2):
+def batch_generate_class3d_visualizations(class3d_jobs, output_dir, force=False, max_workers=2, update_incomplete=False, incomplete_jobs=None):
     """Generate Class3D visualizations in parallel"""
     class3d_visualizations = {}
-    
+    if incomplete_jobs is None:
+        incomplete_jobs = set()
+
     def process_single_class3d(job):
         """Process a single Class3D job and return its visualization path"""
         try:
@@ -962,33 +974,41 @@ def batch_generate_class3d_visualizations(class3d_jobs, output_dir, force=False,
             if job_dir.is_file():
                 job_dir = job_dir.parent
             job_nr = job_dir.name
-            
+
             # Find the most recent iteration to determine expected output filename
             map_files = list(job_dir.glob("run_it???_class00?.mrc"))
             if not map_files:
                 return job['name'], None
-            
+
             map_files = natsorted(map_files)
             try:
                 iter_num_string = extract_iteration_number_as_string(map_files[-1].name)
             except ValueError:
                 return job['name'], None
-            
+
             expected_vis_path = f"assets/Class3D_{job_nr}_it{iter_num_string}_analysis.png"
             full_vis_path = Path(output_dir) / expected_vis_path
-            
-            if full_vis_path.exists() and not force:
+
+            # Check if job is currently incomplete or was previously incomplete
+            success_file = job_dir / "RELION_JOB_EXIT_SUCCESS"
+            job_is_complete = success_file.exists()
+            should_regenerate_for_incomplete = update_incomplete and (
+                not job_is_complete or  # Currently running
+                job['name'] in incomplete_jobs  # Was incomplete, now complete
+            )
+
+            if full_vis_path.exists() and not force and not should_regenerate_for_incomplete:
                 logger.debug(f"Class3D visualization already exists: {expected_vis_path}")
                 return job['name'], expected_vis_path
-            
+
             # Generate new visualization
             vis_path = generate_class3d_visualization(
-                job["details"].get("job_path", ""), 
-                output_dir, 
+                job["details"].get("job_path", ""),
+                output_dir,
                 job['name']
             )
             return job['name'], vis_path
-            
+
         except Exception as e:
             logger.error(f"Error in parallel processing of Class3D {job['name']}: {str(e)}")
             return job['name'], None
@@ -1226,13 +1246,20 @@ def update_note_with_backward_link(note_path, new_job_filename, new_job_name, jo
         logger.error(f"Error updating note with backward link {note_path}: {str(e)}")
         return False
 
-def batch_generate_class2d_images(class2d_jobs, output_dir, force=False, max_workers=3):
+def batch_generate_class2d_images(class2d_jobs, output_dir, force=False, max_workers=3, update_incomplete=False, incomplete_jobs=None):
     """
     Generate Class2D images in parallel using multiple threads.
     max_workers=3 is conservative to avoid memory issues with large images.
+
+    Args:
+        update_incomplete: If True, regenerate images for jobs that are currently incomplete
+                          or were previously tracked as incomplete (now complete)
+        incomplete_jobs: Set of job names that were previously incomplete
     """
     class2d_montages = {}
-    
+    if incomplete_jobs is None:
+        incomplete_jobs = set()
+
     def process_single_class2d(job):
         """Process a single Class2D job and return its montage path"""
         try:
@@ -1240,27 +1267,35 @@ def batch_generate_class2d_images(class2d_jobs, output_dir, force=False, max_wor
             if job_dir.is_file():
                 job_dir = job_dir.parent
             job_nr = job_dir.name
-            
+
             class2d_dir = job_dir
             model_star_files = list(class2d_dir.glob("*model.star"))
-            
+
             if not model_star_files:
                 logger.warning(f"No model.star files found for Class2D job {job_nr}")
                 return job['name'], None
-            
+
             model_star_files.sort()
             iteration = len(model_star_files) - 1
             expected_montage_path = f"assets/Class2D_{job_nr}_montage_It_{iteration}.png"
             full_image_path = Path(output_dir) / expected_montage_path
-            
-            if full_image_path.exists() and not force:
+
+            # Check if job is currently incomplete or was previously incomplete
+            success_file = job_dir / "RELION_JOB_EXIT_SUCCESS"
+            job_is_complete = success_file.exists()
+            should_regenerate_for_incomplete = update_incomplete and (
+                not job_is_complete or  # Currently running
+                job['name'] in incomplete_jobs  # Was incomplete, now complete
+            )
+
+            if full_image_path.exists() and not force and not should_regenerate_for_incomplete:
                 logger.debug(f"Class2D image already exists: {expected_montage_path}")
                 return job['name'], expected_montage_path
-            
+
             # Generate new montage
             montage_path = generate_class2d_image(job["details"].get("job_path", ""), output_dir)
             return job['name'], montage_path
-            
+
         except Exception as e:
             logger.error(f"Error in parallel processing of {job['name']}: {str(e)}")
             return job['name'], None
@@ -1282,7 +1317,7 @@ def batch_generate_class2d_images(class2d_jobs, output_dir, force=False, max_wor
     
     return class2d_montages
 
-def create_obsidian_notes(jobs, output_dir, project_dir, force=False, plot=False):
+def create_obsidian_notes(jobs, output_dir, project_dir, force=False, plot=False, update_incomplete=False):
     """Create or update Obsidian notes for all jobs"""
     try:
         os.makedirs(output_dir, exist_ok=True)
@@ -1319,7 +1354,8 @@ def create_obsidian_notes(jobs, output_dir, project_dir, force=False, plot=False
                 force or  # Force flag is set
                 not os.path.exists(note_path) or  # Note doesn't exist yet
                 (job['name'] in incomplete_jobs and job_is_complete) or  # Was incomplete, now complete
-                (job['name'] in incomplete_jobs and not job_is_complete)  # Still incomplete, update anyway
+                (job['name'] in incomplete_jobs and not job_is_complete) or  # Still incomplete, update anyway
+                (update_incomplete and not job_is_complete)  # --update-incomplete flag: update all currently running jobs
             )
             
             if not should_parse:
@@ -1362,17 +1398,20 @@ def create_obsidian_notes(jobs, output_dir, project_dir, force=False, plot=False
             # Generate Class2D images before creating notes (parallel processing)
             logger.info("Checking Class2D visualizations...")
             class2d_jobs = [j for j in all_jobs.values() if j['type'] == 'Class2D']
-            class2d_montages = batch_generate_class2d_images(class2d_jobs, output_dir, force, max_workers=3)
+            class2d_montages = batch_generate_class2d_images(class2d_jobs, output_dir, force, max_workers=3,
+                                                             update_incomplete=update_incomplete, incomplete_jobs=incomplete_jobs)
 
             # Generate Refine3D visualizations
             logger.info("Checking Refine3D visualizations...")
             refine3d_jobs = [j for j in all_jobs.values() if j['type'] == 'Refine3D']
-            refine3d_visualizations = batch_generate_refine3d_visualizations(refine3d_jobs, output_dir, force, max_workers=2)
+            refine3d_visualizations = batch_generate_refine3d_visualizations(refine3d_jobs, output_dir, force, max_workers=2,
+                                                                             update_incomplete=update_incomplete, incomplete_jobs=incomplete_jobs)
 
             # Generate Class3D visualizations
             logger.info("Checking Class3D visualizations...")
             class3d_jobs = [j for j in all_jobs.values() if j['type'] == 'Class3D']
-            class3d_visualizations = batch_generate_class3d_visualizations(class3d_jobs, output_dir, force, max_workers=2)
+            class3d_visualizations = batch_generate_class3d_visualizations(class3d_jobs, output_dir, force, max_workers=2,
+                                                                           update_incomplete=update_incomplete, incomplete_jobs=incomplete_jobs)
         else:
             logger.info("Skipping visualizations (use --plot to generate)")
 
@@ -1395,7 +1434,8 @@ def create_obsidian_notes(jobs, output_dir, project_dir, force=False, plot=False
                 force or  # Force flag is set
                 not os.path.exists(note_path) or  # Note doesn't exist yet
                 (job['name'] in incomplete_jobs and job_is_complete) or  # Was incomplete, now complete
-                (job['name'] in incomplete_jobs and not job_is_complete)  # Still incomplete, update anyway
+                (job['name'] in incomplete_jobs and not job_is_complete) or  # Still incomplete, update anyway
+                (update_incomplete and not job_is_complete)  # --update-incomplete flag: update all currently running jobs
             )
             
             if not should_update:
@@ -1563,11 +1603,12 @@ def create_obsidian_notes(jobs, output_dir, project_dir, force=False, plot=False
 
                     # Highlighted settings section
                     highlighted_settings = [
+                        "ref",
                         "iter", 
                         "K", "tau2_fudge",
                         "particle_diameter", "helical_outer_diameter",
-                        "no_init_blobs", "ctf",         # Special settings for classifying amyloids/fibrils
-                        "psi_step", "oversampling", "healpix_order",
+                        "ctf_intact_first_peak", "no_init_blobs", "ctf",         # Special settings for classifying amyloids/fibrils
+                        "psi_step", "sigma_psi", "oversampling", "healpix_order",
                         "ini_high",     # initial low pass filter
                         "sym", "helical_twist_initial",
                         "helical_rise_initial", "helical_symmetry_search",
@@ -1781,6 +1822,7 @@ def main():
     parser.add_argument("-i", "--project_dir", required=True, help="Path to the RELION project directory.")
     parser.add_argument("-o", "--output_dir", required=True, help="Path to the output directory for Obsidian notes.")
     parser.add_argument("--force", action="store_true", help="Force regeneration of existing notes. Persistent Notes sections are preserved.")
+    parser.add_argument("--update-incomplete", action="store_true", help="Update notes for jobs that are still running (no RELION_JOB_EXIT_SUCCESS file).")
     parser.add_argument("--plot", action="store_true", help="Generate visualizations (Class2D montages, Refine3D/Class3D analysis plots).")
     parser.add_argument("--verbose", action="store_true", help="Enable verbose logging.")
     
@@ -1809,7 +1851,7 @@ def main():
         logger.info(f"Found {len(jobs)} jobs.")
         
         # Create or update notes with links between jobs
-        create_obsidian_notes(jobs, args.output_dir, args.project_dir, args.force, args.plot)
+        create_obsidian_notes(jobs, args.output_dir, args.project_dir, args.force, args.plot, args.update_incomplete)
         logger.info(f"Obsidian notes created in {args.output_dir}")
         logger.info("Open this directory as an Obsidian vault to view the job structure.")
         
