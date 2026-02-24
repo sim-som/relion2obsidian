@@ -1520,7 +1520,7 @@ def create_obsidian_notes(jobs, output_dir, project_dir, force=False, plot=False
                     # Section for automatically generated plots
                     ## Class2D:
                     if job['type'] == "Class2D":
-                        f.write("# 2D Class Averages\n\n")
+                        f.write("# 2D Class Averages\n")
                         montage_path = class2d_montages.get(job['name'])
                         if montage_path:
                             f.write(f"![Class2D Montage]({montage_path})\n\n")
@@ -1531,14 +1531,14 @@ def create_obsidian_notes(jobs, output_dir, project_dir, force=False, plot=False
                     if job['type'] == 'Refine3D':
                         vis_path = refine3d_visualizations.get(job['name'])
                         if vis_path:
-                            f.write("# Plots")
+                            f.write("# Plots\n")
                             f.write(f"![Refine3D Analysis]({vis_path})\n\n")
                     
                     ## Add Class3D visualization if available
                     if job['type'] == 'Class3D':
                         vis_path = class3d_visualizations.get(job['name'])
                         if vis_path:
-                            f.write("# Plots")
+                            f.write("# Plots\n")
                             f.write(f"![Class3D Analysis]({vis_path})\n\n")
                     
                     # Basic info section
