@@ -794,6 +794,22 @@ def read_num_classes(model_star_filep:Path) -> int:
 
     return models_df["rlnNrClasses"]
 
+def read_class_distribution(model_star_filep:Path, num_classes:int) -> dict:
+    """Read particles class distribution from a RELION *_model.star file
+
+    Args:
+        model_star_filep (Path): _description_
+        num_classes (int): _description_
+
+    Returns:
+        dict: Dictionary mapping class number (Starting at 1!) to it's corresponding class distribution
+    """
+
+    assert model_star_filep.exists()
+    model_classes_df = starfile.read(model_star_filep)["model_classes"]
+
+    return {i+1:model_classes_df["rlnClassDistribution"][i] for i in range(num_classes)}
+
 def generate_class3d_visualization(job_dir, out_dir, job_name):
     """Generate visualization for Class3D job (map slices + orientation histogram)"""
     try:
@@ -847,6 +863,10 @@ def generate_class3d_visualization(job_dir, out_dir, job_name):
         particle_df = starfile.read(particles_star_fpath)["particles"]
         model_dict = starfile.read(model_star_fpath)
         est_resolution = model_dict["model_general"]["rlnCurrentResolution"]
+
+        # Get class distribution of particles:
+        class_distribution = read_class_distribution(model_star_fpath, num_classes=num_classes)
+
         
         # Create combined figure
         total_rows = num_classes + 1
@@ -871,7 +891,7 @@ def generate_class3d_visualization(job_dir, out_dir, job_name):
             ax2.imshow(map_arr[:, mid_y, :], cmap='gray')
             ax3.imshow(map_arr[:, :, mid_x], cmap='gray')
 
-            ax1.set_title(f"Class {i+1} - Z slice")
+            ax1.set_title(f"Class {i+1} - Z slice (Class dist.: {class_distribution[i+1]})")
             ax2.set_title(f"Class {i+1} - Y slice")
             ax3.set_title(f"Class {i+1} - X slice")
 
