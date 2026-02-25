@@ -737,7 +737,7 @@ def generate_refine3d_visualization(job_dir, out_dir, job_name):
 
         h = ax_orient.hist2d(azimuthal_angles, polar_angles, bins=bins, cmap='viridis')
 
-        cbar = plt.colorbar(h[3], ax=ax_orient)
+        cbar = fig.colorbar(h[3], ax=ax_orient)
         cbar.set_label('Count')
 
         ax_orient.set_xlabel('Azimuthal Angle ("Rot") (φ)°')
@@ -746,7 +746,7 @@ def generate_refine3d_visualization(job_dir, out_dir, job_name):
         ax_orient.grid(alpha=0.3)
 
         fig.suptitle(f"Refine3D Analysis: {job_name} ({fsc_resolution:.2f} Å)", fontsize=16)
-        plt.tight_layout()
+        fig.tight_layout(rect=[0, 0, 1, 0.96])
         
         # Save figure
         rel_output_path = f"assets/Refine3D_{job_nr}_analysis.png"
@@ -912,7 +912,7 @@ def generate_class3d_visualization(job_dir, out_dir, job_name):
 
         h = ax_orient.hist2d(azimuthal_angles, polar_angles, bins=bins, cmap='viridis')
 
-        cbar = plt.colorbar(h[3], ax=ax_orient)
+        cbar = fig.colorbar(h[3], ax=ax_orient)
         cbar.set_label('Count')
 
         ax_orient.set_xlabel('Azimuthal Angle ("Rot") (φ)°')
@@ -921,7 +921,7 @@ def generate_class3d_visualization(job_dir, out_dir, job_name):
         ax_orient.grid(alpha=0.3)
 
         fig.suptitle(f"Class3D Analysis: {job_name} It. {iter_num} ({est_resolution:.2f} Å)", fontsize=16)
-        plt.tight_layout()
+        fig.tight_layout(rect=[0, 0, 1, 0.96])
         
         # Save figure
         rel_output_path = f"assets/Class3D_{job_nr}_it{iter_num_string}_analysis.png"
