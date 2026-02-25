@@ -7,6 +7,7 @@ import numpy as np
 from matplotlib import pyplot as plt
 from matplotlib.colors import LogNorm
 from matplotlib.backends.backend_agg import FigureCanvasAgg
+from matplotlib.gridspec import GridSpec
 from matplotlib.figure import Figure
 from matplotlib.patheffects import withStroke
 from matplotlib_scalebar.scalebar import ScaleBar
@@ -691,20 +692,21 @@ def generate_refine3d_visualization(job_dir, out_dir, job_name):
         # Create combined figure
         total_rows = NUM_CLASSES + 1
         fig = plt.figure(figsize=(15, 5 * total_rows))
-        
+        gs = GridSpec(total_rows, 3, figure=fig)
+
         # Plot map slices
         for i, map_file in enumerate(filtered_maps):
             with mrcfile.open(map_file) as mrc:
                 map_arr = mrc.data
                 map_arr = normalize(map_arr)
-            
+
             # Get class number from map file name:
             m = re.search(r'class(\d+)', map_file.name)
             class_id = int(m.group(1)) if m else i + 1
-            
-            ax1 = plt.subplot(total_rows, 3, i*3 + 1)
-            ax2 = plt.subplot(total_rows, 3, i*3 + 2) 
-            ax3 = plt.subplot(total_rows, 3, i*3 + 3)
+
+            ax1 = fig.add_subplot(gs[i, 0])
+            ax2 = fig.add_subplot(gs[i, 1])
+            ax3 = fig.add_subplot(gs[i, 2])
             
             mid_z = map_arr.shape[0] // 2
             mid_y = map_arr.shape[1] // 2
@@ -722,27 +724,27 @@ def generate_refine3d_visualization(job_dir, out_dir, job_name):
             ax2.axis('off')
             ax3.axis('off')
         
-        # Orientation histogram
-        ax_orient = plt.subplot(total_rows, 1, total_rows)
-        
+        # Orientation histogram (spans all 3 columns in the last row)
+        ax_orient = fig.add_subplot(gs[-1, :])
+
         azimuthal_angles = np.array(particle_df["rlnAngleRot"])
         polar_angles = np.array(particle_df["rlnAngleTilt"])
-        
+
         # Auto bin calculation using Sturges
         nbins_x = int(np.floor(np.log2(len(azimuthal_angles)) + 1))
         nbins_y = int(np.floor(np.log2(len(polar_angles)) + 1))
         bins = (nbins_x, nbins_y)
-        
+
         h = ax_orient.hist2d(azimuthal_angles, polar_angles, bins=bins, cmap='viridis')
-        
+
         cbar = plt.colorbar(h[3], ax=ax_orient)
         cbar.set_label('Count')
-        
+
         ax_orient.set_xlabel('Azimuthal Angle ("Rot") (φ)°')
         ax_orient.set_ylabel('Polar Angle ("Tilt") (θ)°')
         ax_orient.set_title(f'Orientation Distribution')
         ax_orient.grid(alpha=0.3)
-        
+
         fig.suptitle(f"Refine3D Analysis: {job_name} ({fsc_resolution:.2f} Å)", fontsize=16)
         plt.tight_layout()
         
@@ -784,6 +786,14 @@ def extract_iteration_number_as_string(filename):
     else:
         raise ValueError(f"No iteration number found in filename: {filename}")
 
+def read_num_classes(model_star_filep:Path) -> int:
+
+    assert model_star_filep.exists()
+
+    models_df = starfile.read(model_star_filep)["model_general"]
+
+    return models_df["rlnNrClasses"]
+
 def generate_class3d_visualization(job_dir, out_dir, job_name):
     """Generate visualization for Class3D job (map slices + orientation histogram)"""
     try:
@@ -818,7 +828,7 @@ def generate_class3d_visualization(job_dir, out_dir, job_name):
             logger.warning(f"No maps found for iteration {iter_num_string} in {job_dir}")
             return None
         
-        NUM_CLASSES = len(map_files_one_it)
+        num_classes = len(map_files_one_it)
         
         # Read map dimensions
         with mrcfile.open(map_files_one_it[0]) as mrc:
@@ -827,6 +837,8 @@ def generate_class3d_visualization(job_dir, out_dir, job_name):
         # Load particle data for this iteration
         particles_star_fpath = job_dir / f"run_it{iter_num_string}_data.star"
         model_star_fpath = job_dir / f"run_it{iter_num_string}_model.star"
+        # sanity check: compare rlnNrClasses with number of classes from globbing mrc files:
+        assert read_num_classes(model_star_fpath) == num_classes
         
         if not particles_star_fpath.exists() or not model_star_fpath.exists():
             logger.warning(f"Missing required files for Class3D iteration {iter_num_string} in {job_dir}")
@@ -837,18 +849,19 @@ def generate_class3d_visualization(job_dir, out_dir, job_name):
         est_resolution = model_dict["model_general"]["rlnCurrentResolution"]
         
         # Create combined figure
-        total_rows = NUM_CLASSES + 1
+        total_rows = num_classes + 1
         fig = plt.figure(figsize=(15, 5 * total_rows))
-        
+        gs = GridSpec(total_rows, 3, figure=fig)
+
         # Plot map slices
         for i, map_file in enumerate(map_files_one_it):
             with mrcfile.open(map_file) as mrc:
                 map_arr = mrc.data
                 map_arr = normalize(map_arr)
-            
-            ax1 = plt.subplot(total_rows, 3, i*3 + 1)
-            ax2 = plt.subplot(total_rows, 3, i*3 + 2) 
-            ax3 = plt.subplot(total_rows, 3, i*3 + 3)
+
+            ax1 = fig.add_subplot(gs[i, 0])
+            ax2 = fig.add_subplot(gs[i, 1])
+            ax3 = fig.add_subplot(gs[i, 2])
             
             mid_z = map_arr.shape[0] // 2
             mid_y = map_arr.shape[1] // 2
@@ -866,27 +879,27 @@ def generate_class3d_visualization(job_dir, out_dir, job_name):
             ax2.axis('off')
             ax3.axis('off')
         
-        # Orientation histogram
-        ax_orient = plt.subplot(total_rows, 1, total_rows)
-        
+        # Orientation histogram (spans all 3 columns in the last row)
+        ax_orient = fig.add_subplot(gs[-1, :])
+
         azimuthal_angles = np.array(particle_df["rlnAngleRot"])
         polar_angles = np.array(particle_df["rlnAngleTilt"])
-        
+
         # Auto bin calculation using Sturges
         nbins_x = int(np.floor(np.log2(len(azimuthal_angles)) + 1))
         nbins_y = int(np.floor(np.log2(len(polar_angles)) + 1))
         bins = (nbins_x, nbins_y)
-        
+
         h = ax_orient.hist2d(azimuthal_angles, polar_angles, bins=bins, cmap='viridis')
-        
+
         cbar = plt.colorbar(h[3], ax=ax_orient)
         cbar.set_label('Count')
-        
+
         ax_orient.set_xlabel('Azimuthal Angle ("Rot") (φ)°')
         ax_orient.set_ylabel('Polar Angle ("Tilt") (θ)°')
         ax_orient.set_title(f'Orientation Distribution - {particles_star_fpath.name}')
         ax_orient.grid(alpha=0.3)
-        
+
         fig.suptitle(f"Class3D Analysis: {job_name} It. {iter_num} ({est_resolution:.2f} Å)", fontsize=16)
         plt.tight_layout()
         
