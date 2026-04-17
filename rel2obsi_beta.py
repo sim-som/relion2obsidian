@@ -1578,8 +1578,7 @@ def create_obsidian_notes(jobs, output_dir, project_dir, force=False, plot=False
                     if 'user_notes' in job['details'] and job['details']['user_notes'].strip():
                         f.write("# RELION Command\n\n")
                         f.write(job['details']['user_notes'])                   
-
-                    
+                        f.write("\n")
 
                     # Highlighted settings section
                     highlighted_settings = [
