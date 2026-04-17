@@ -1573,66 +1573,13 @@ def create_obsidian_notes(jobs, output_dir, project_dir, force=False, plot=False
                         if vis_path:
                             f.write("# Plots\n")
                             f.write(f"![Class3D Analysis]({vis_path})\n\n")
-                    
-                    # Basic info section
-                    f.write("# Job Information\n\n")
-                    f.write(f"- **Job Type**: {job['type']}\n")
-                    f.write(f"- **Job Name**: {job['name']}\n")
-                    f.write(f"- **Path**: `{job['details'].get('job_path', '')}`\n")
-                    
-                    if 'creation_date' in job['details']:
-                        f.write(f"- **Created**: {job['details']['creation_date']}\n")
-                    
-                    f.write("\n")
-                    
-                    # Input jobs section if applicable
-                    input_jobs = job['details'].get('input_jobs', [])
-                    if input_jobs:
-                        f.write("# Input Jobs\n\n")
-                        for input_job_name in input_jobs:
-                            parts = input_job_name.replace(" ", "").rstrip("/").split("/")
-                            if len(parts) == 2:
-                                job_type, job_short = parts
-                                link_basename = f"{job_short}_{job_type}"
-                                link_text = f"{job_type}: {job_short}"
-                                f.write(f"- [[{link_basename}|{link_text}]]\n")
-                            else:
-                                f.write(f"- {input_job_name}\n")
-                        f.write("\n")
 
-
-                    # Output jobs section (Jobs that use this)
-                    output_jobs = job['details'].get('output_jobs', [])
-                    if output_jobs:
-                        f.write("# Jobs that use this\n\n")
-                        for out_job_name in output_jobs:
-                            # Beispiel: "ManualPick/job005"
-                            # -> wir extrahieren type="ManualPick", short="job005"
-                            parts = out_job_name.replace(" ", "").rstrip("/").split("/")
-                            if len(parts) == 2:
-                                job_type, job_short = parts
-                                link_basename = f"{job_short}_{job_type}"
-                                link_text = f"{job_type}: {job_short}"
-                                f.write(f"- [[{link_basename}|{link_text}]]\n")
-                            else:
-                                f.write(f"- {out_job_name}\n")
-                        f.write("\n")
-
+                    # User notes section at the end if available
+                    if 'user_notes' in job['details'] and job['details']['user_notes'].strip():
+                        f.write("# RELION Command\n\n")
+                        f.write(job['details']['user_notes'])                   
 
                     
-                    # # User notes section if available
-                    # if 'user_notes' in job['details'] and job['details']['user_notes'].strip():
-                    #     f.write("# User Notes\n\n")
-                    #     f.write("```\n")
-                    #     f.write(job['details']['user_notes'])
-                    #     f.write("\n```\n\n")
-                    
-                    # # Details section
-                    # f.write("# Additional Details\n\n")
-                    # for key, value in job["details"].items():
-                    #     if key not in ["settings", "input_jobs", "job_name", "job_path", "user_notes", "tags", "creation_date"]:
-                    #         f.write(f"- **{key}**: {value}\n")
-                    # f.write("\n")
 
                     # Highlighted settings section
                     highlighted_settings = [
@@ -1700,13 +1647,52 @@ def create_obsidian_notes(jobs, output_dir, project_dir, force=False, plot=False
                                 pp_filename = get_job_note_filename(pp_job)
                                 f.write(f"- [[{pp_filename.replace('.md', '')}|PostProcess: {pp_job['name']}]]\n")
                             f.write("\n")
-                        
-                    # User notes section at the end if available
-                    if 'user_notes' in job['details'] and job['details']['user_notes'].strip():
-                        f.write("# RELION Command\n\n")
-                        f.write("```\n")
-                        f.write(job['details']['user_notes'])
-                        f.write("\n```\n\n")
+
+                    # Basic info section
+                    f.write("# Job Information\n\n")
+                    f.write(f"- **Job Type**: {job['type']}\n")
+                    f.write(f"- **Job Name**: {job['name']}\n")
+                    f.write(f"- **Path**: `{job['details'].get('job_path', '')}`\n")
+                    
+                    if 'creation_date' in job['details']:
+                        f.write(f"- **Created**: {job['details']['creation_date']}\n")
+                    
+                    f.write("\n")
+                    
+                    # Input jobs section if applicable
+                    input_jobs = job['details'].get('input_jobs', [])
+                    if input_jobs:
+                        f.write("# Input Jobs\n\n")
+                        for input_job_name in input_jobs:
+                            parts = input_job_name.replace(" ", "").rstrip("/").split("/")
+                            if len(parts) == 2:
+                                job_type, job_short = parts
+                                link_basename = f"{job_short}_{job_type}"
+                                link_text = f"{job_type}: {job_short}"
+                                f.write(f"- [[{link_basename}|{link_text}]]\n")
+                            else:
+                                f.write(f"- {input_job_name}\n")
+                        f.write("\n")
+
+
+                    # Output jobs section (Jobs that use this)
+                    output_jobs = job['details'].get('output_jobs', [])
+                    if output_jobs:
+                        f.write("# Jobs that use this\n\n")
+                        for out_job_name in output_jobs:
+                            # Beispiel: "ManualPick/job005"
+                            # -> wir extrahieren type="ManualPick", short="job005"
+                            parts = out_job_name.replace(" ", "").rstrip("/").split("/")
+                            if len(parts) == 2:
+                                job_type, job_short = parts
+                                link_basename = f"{job_short}_{job_type}"
+                                link_text = f"{job_type}: {job_short}"
+                                f.write(f"- [[{link_basename}|{link_text}]]\n")
+                            else:
+                                f.write(f"- {out_job_name}\n")
+                        f.write("\n")
+   
+
             
             except Exception as e:
                 logger.error(f"Error creating note for {job['name']}: {str(e)}")
