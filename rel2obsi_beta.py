@@ -1698,25 +1698,61 @@ def create_obsidian_notes(jobs, output_dir, project_dir, force=False, plot=False
                 logger.debug(traceback.format_exc())
         
         # Now update notes with backward links
+        # input_jobs entries use the full "Type/jobNNN" format from the pipeline parser,
+        # but all_jobs is keyed by the short ID ("jobNNN") from the directory name.
+        # Extract the short ID for the lookup so the loop actually resolves.
         logger.info("Creating backward links between jobs...")
         for job in tqdm(all_jobs.values(), desc="Creating backward links"):
             input_jobs = job['details'].get('input_jobs', [])
             note_filename = get_job_note_filename(job)
-            
+
             for input_job_name in input_jobs:
-                if input_job_name in all_jobs:
-                    input_job = all_jobs[input_job_name]
+                short_id = input_job_name.split("/")[-1] if "/" in input_job_name else input_job_name
+                if short_id in all_jobs:
+                    input_job = all_jobs[short_id]
                     input_note_path = os.path.join(output_dir, get_job_note_filename(input_job))
                     update_note_with_backward_link(input_note_path, note_filename, job['name'], job['type'])
-        
+
+        # When --update-incomplete is active, also update backward links on upstream
+        # notes of jobs that have just transitioned from incomplete to complete.
+        # Their notes were regenerated this run, potentially clearing links added in a
+        # previous run that weren't captured in output_jobs metadata.
+        # Walk up to 3 levels of ancestry so that grandparent/great-grandparent notes
+        # are also kept consistent.
+        completed_jobs = incomplete_jobs - newly_incomplete_jobs
+        if update_incomplete and completed_jobs:
+            logger.info(f"Updating backward links for upstream notes of {len(completed_jobs)} newly-completed job(s)...")
+            for completed_job_name in completed_jobs:
+                if completed_job_name not in all_jobs:
+                    continue
+                completed_job = all_jobs[completed_job_name]
+                completed_note_filename = get_job_note_filename(completed_job)
+                # BFS up to 3 levels upstream
+                frontier = list(completed_job['details'].get('input_jobs', []))
+                visited = set()
+                for _ in range(3):
+                    next_frontier = []
+                    for input_job_name in frontier:
+                        short_id = input_job_name.split("/")[-1] if "/" in input_job_name else input_job_name
+                        if short_id in visited or short_id not in all_jobs:
+                            continue
+                        visited.add(short_id)
+                        input_job = all_jobs[short_id]
+                        input_note_path = os.path.join(output_dir, get_job_note_filename(input_job))
+                        update_note_with_backward_link(
+                            input_note_path, completed_note_filename,
+                            completed_job['name'], completed_job['type']
+                        )
+                        next_frontier.extend(input_job['details'].get('input_jobs', []))
+                    frontier = next_frontier
+
         # Create an index file for easier navigation
         create_index_file(all_jobs, output_dir)
-        
+
         # Update incomplete jobs tracking
         save_incomplete_jobs(output_dir, newly_incomplete_jobs)
-        
+
         # Log summary
-        completed_jobs = incomplete_jobs - newly_incomplete_jobs
         if completed_jobs:
             logger.info(f"Completed jobs since last run: {', '.join(completed_jobs)}")
         if newly_incomplete_jobs:
