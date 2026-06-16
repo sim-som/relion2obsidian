@@ -824,19 +824,21 @@ def generate_class3d_visualization(job_dir, out_dir, job_name):
             return None
         
         job_nr = job_dir.name
-        
-        # Find filtered maps with iteration pattern
+
+        # Find 3d class maps with iteration glob pattern
         map_files = list(job_dir.glob("run_it???_class00?.mrc"))
         if not map_files:
             logger.warning(f"No class maps found for Class3D job {job_name}")
             return None
         
+        print("hello there")
+
         map_files = natsorted(map_files)
-        
         # Get iteration from last map (most recent iteration)
         iter_num = extract_iteration_number(map_files[-1].name)
         iter_num_string = extract_iteration_number_as_string(map_files[-1].name)
-        
+
+
         # Get all maps from this iteration
         map_files_one_it = list(job_dir.glob(f"*{iter_num_string}*.mrc"))
         
@@ -846,36 +848,51 @@ def generate_class3d_visualization(job_dir, out_dir, job_name):
         
         num_classes = len(map_files_one_it)
         
+
         # Read map dimensions
         with mrcfile.open(map_files_one_it[0]) as mrc:
             MAP_SHAPE = mrc.data.shape
-        
-        # Load particle data for this iteration
+
+        # Load particle and model data for this iteration (from star files)
         particles_star_fpath = job_dir / f"run_it{iter_num_string}_data.star"
         model_star_fpath = job_dir / f"run_it{iter_num_string}_model.star"
+        
+
+        
         # sanity check: compare rlnNrClasses with number of classes from globbing mrc files:
         assert read_num_classes(model_star_fpath) == num_classes
         
+
         if not particles_star_fpath.exists() or not model_star_fpath.exists():
             logger.warning(f"Missing required files for Class3D iteration {iter_num_string} in {job_dir}")
             return None
         
+
+
         particle_df = starfile.read(particles_star_fpath)["particles"]
         model_dict = starfile.read(model_star_fpath)
         est_resolution = model_dict["model_general"]["rlnCurrentResolution"]
 
-        # Get class distribution of particles:
-        class_distribution = read_class_distribution(model_star_fpath, num_classes=num_classes)
-
+        print("hello there")
         
+        # Extract general class info from "model_classes" table:
+        model_classes_df = model_dict["model_classes"]
+
+        # Get class distribution of particles:
+        class_distribution:dict = {i+1:model_classes_df["rlnClassDistribution"][i] for i in range(num_classes)} # Define Class ID starting from 1! (See below in plotting)
+        
+        # Get 3d-map class <-> number assignment:
+        maps_3d_classes:dict = {i+1:model_classes_df["rlnReferenceImage"][i] for i in range(num_classes)}
+
         # Create combined figure
         total_rows = num_classes + 1
         fig = plt.figure(figsize=(15, 5 * total_rows))
         gs = GridSpec(total_rows, 3, figure=fig)
 
         # Plot map slices
-        for i, map_file in enumerate(map_files_one_it):
-            with mrcfile.open(map_file) as mrc:
+        for i, (class_id, map_file) in enumerate(maps_3d_classes.items()):
+            map_file_abs_path = job_dir / Path(map_file).name
+            with mrcfile.open(map_file_abs_path) as mrc:
                 map_arr = mrc.data
                 map_arr = normalize(map_arr)
 
@@ -891,9 +908,9 @@ def generate_class3d_visualization(job_dir, out_dir, job_name):
             ax2.imshow(map_arr[:, mid_y, :], cmap='gray')
             ax3.imshow(map_arr[:, :, mid_x], cmap='gray')
 
-            ax1.set_title(f"Class {i+1} - Z slice (Class dist.: {class_distribution[i+1]})")
-            ax2.set_title(f"Class {i+1} - Y slice")
-            ax3.set_title(f"Class {i+1} - X slice")
+            ax1.set_title(f"Class {class_id} - Z slice (Class dist.: {class_distribution[class_id]})")
+            ax2.set_title(f"Class {class_id} - Y slice")
+            ax3.set_title(f"Class {class_id} - X slice")
 
             ax1.axis('off')
             ax2.axis('off')
