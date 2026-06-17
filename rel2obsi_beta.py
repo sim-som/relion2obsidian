@@ -78,63 +78,151 @@ def find_job_files(project_dir, max_depth=2, current_depth=0):
     return job_files
 
 
-def parse_relion_jobs(project_dir):
+def _build_tags(job_type, job_details=None):
+    tags = ["relion", job_type.lower(), "cryo-em"]
+    if "Micrograph" in job_type or job_type == "Motion_Corr":
+        tags.append("micrograph-processing")
+    elif job_type in ["Class2D", "Class3D"]:
+        tags.append("classification")
+    elif job_type == "Refine3D":
+        tags.append("refinement")
+    elif job_type == "Extract":
+        tags.append("particle-extraction")
+    elif job_type in ["ManualPick", "AutoPick"]:
+        tags.append("picking")
+    if job_type in ["Refine3D", "PostProcess"] and job_details:
+        if "angpix" in job_details.get("settings", {}):
+            tags.append("resolution")
+    return tags
+
+
+def parse_relion_jobs(project_dir, output_dir=None, force=False):
     """
     Parses the RELION project directory to extract job information.
     Optimized to reduce RAM usage by streaming file processing.
 
     :param project_dir: Path to the RELION project directory.
+    :param output_dir: Output directory for Obsidian notes (used to skip already-complete jobs on reruns).
+    :param force: Re-process all jobs even if notes already exist.
     :return: Generator yielding job dictionaries.
     """
-    # Validate project directory exists
     if not os.path.isdir(project_dir):
         logger.error(f"Project directory does not exist: {project_dir}")
         raise FileNotFoundError(f"Project directory does not exist: {project_dir}")
-    
+
     job_count = 0
     error_count = 0
-    
-# Cache pipeline data to avoid re-reading for each job
-    pipeline_cache = {}
-    
+    skipped_count = 0
+
+    job_dir_patterns = [
+        'Import', 'MotionCorr', 'CtfFind', 'ManualPick', 'AutoPick', 'Extract', 'Select', 'Subset',
+        'Class2D', 'Class3D', 'Refine3D', 'InitialModel', 'MultiBody', 'Reconstruct',
+        'Polish', 'CtfRefine', 'BayesianPolishing', 'PostProcess', 'LocalRes', 'MaskCreate',
+        'External', 'Subtract', 'JoinStar', 'Split', 'MovieRefine', 'TiltSeries',
+        'TomogramReconstruct', 'TomogramCtfRefine', 'TomogramClassify3D', 'TomogramRefine3D',
+        'ResMap', 'MultiBodyRefine', 'HelicalRefine3D', 'HelicalInitialModel',
+        'Export', 'ImportMovies', 'MotionCorrMulti', 'Recenter', 'RelionIt',
+        'CoordinateExport', 'CtfPlot', 'ParticleSubtract', 'AutoRefine'
+    ]
+
     # Fast scan for all job files first
     logger.info("Scanning for job files...")
     job_files = find_job_files(project_dir)
     logger.info(f"Found {len(job_files)} job files to process")
-    
+
+    # Pre-scan existing notes for O(1) lookup during the job loop
+    existing_notes: set = set()
+    if output_dir and not force and os.path.isdir(output_dir):
+        existing_notes = set(os.listdir(output_dir))
+
+    # Load pipeline data once before the job loop
+    possible_pipelines = [
+        os.path.join(project_dir, "default_pipeline.star"),
+        os.path.join(project_dir, "pipeline.star"),
+    ]
+    pipeline_path = next((p for p in possible_pipelines if os.path.exists(p)), None)
+    pipeline_data = None
+    if pipeline_path:
+        try:
+            pipeline_data = starfile.read(pipeline_path)
+            logger.debug(f"Loaded pipeline file: {pipeline_path}")
+        except Exception as e:
+            logger.warning(f"Error reading pipeline file {pipeline_path}: {str(e)}")
+    else:
+        logger.warning("No pipeline.star or default_pipeline.star found in project root")
+
+    # Build input/output lookup tables in a single pass over edges — O(M) instead of O(N×M)
+    input_lookup: dict = {}   # "Type/jobXXX" -> [input_job, ...]
+    output_lookup: dict = {}  # "Type/jobXXX" -> [output_job, ...]
+    if isinstance(pipeline_data, dict):
+        edges = (
+            pipeline_data.get("data_pipeline_input_edges")
+            or pipeline_data.get("pipeline_input_edges")
+        )
+        if edges is not None:
+            try:
+                for _, edge in edges.iterrows():
+                    to_proc = edge["rlnPipeLineEdgeProcess"].strip().rstrip("/")
+                    from_node = edge["rlnPipeLineEdgeFromNode"].strip()
+                    from_parts = from_node.split("/")
+                    to_parts = to_proc.split("/")
+                    if len(from_parts) >= 2 and len(to_parts) >= 2:
+                        from_job = f"{from_parts[0]}/{from_parts[1]}"
+                        to_job = f"{to_parts[0]}/{to_parts[1]}"
+                        if to_proc not in input_lookup:
+                            input_lookup[to_proc] = []
+                        if from_job not in input_lookup[to_proc]:
+                            input_lookup[to_proc].append(from_job)
+                        if from_job not in output_lookup:
+                            output_lookup[from_job] = []
+                        if to_job not in output_lookup[from_job]:
+                            output_lookup[from_job].append(to_job)
+            except Exception as e:
+                logger.warning(f"Error building pipeline edge lookups: {str(e)}")
+
     # Process job files
     for job_path in tqdm(job_files, desc="Processing jobs"):
         job_name = os.path.basename(os.path.dirname(job_path))
         root = os.path.dirname(job_path)
         file = os.path.basename(job_path)
-        
+
         try:
-            # Determine job type based on folder name
-            job_dir_patterns = [
-                'Import', 'MotionCorr', 'CtfFind', 'ManualPick', 'AutoPick', 'Extract', 'Select', 'Subset',
-                'Class2D', 'Class3D', 'Refine3D', 'InitialModel', 'MultiBody', 'Reconstruct',
-                'Polish', 'CtfRefine', 'BayesianPolishing', 'PostProcess', 'LocalRes', 'MaskCreate',
-                'External', 'Subtract', 'JoinStar', 'Split', 'MovieRefine', 'TiltSeries',
-                'TomogramReconstruct', 'TomogramCtfRefine', 'TomogramClassify3D', 'TomogramRefine3D',
-                'ResMap', 'MultiBodyRefine', 'HelicalRefine3D', 'HelicalInitialModel',
-                'Export', 'ImportMovies', 'MotionCorrMulti', 'Recenter', 'RelionIt',
-                'CoordinateExport', 'CtfPlot', 'ParticleSubtract', 'AutoRefine'
-            ]
-
             job_type = next((t for t in job_dir_patterns if t in root), "Unknown")
+            process_key = f"{job_type}/{job_name}"
 
+            # Skip complete jobs that already have an up-to-date note
+            if existing_notes:
+                safe_name = re.sub(r'[\\/*?:"<>|]', "_", job_name)
+                note_filename = f"{safe_name}_{job_type}.md"
+                success_file = os.path.join(root, "RELION_JOB_EXIT_SUCCESS")
+                if note_filename in existing_notes and os.path.exists(success_file):
+                    creation_time = os.path.getctime(job_path)
+                    creation_date = datetime.datetime.fromtimestamp(creation_time)
+                    skipped_count += 1
+                    yield {
+                        "name": job_name,
+                        "type": job_type,
+                        "details": {
+                            "job_name": job_name,
+                            "job_path": os.path.abspath(job_path),
+                            "creation_date": creation_date.strftime("%Y-%m-%d %H:%M:%S"),
+                            "tags": _build_tags(job_type),
+                            "input_jobs": input_lookup.get(process_key, []),
+                            "output_jobs": output_lookup.get(process_key, []),
+                        },
+                    }
+                    continue
 
             # Get creation time for sorting/timeline
             creation_time = os.path.getctime(job_path)
             creation_date = datetime.datetime.fromtimestamp(creation_time)
 
-            # Parse job information (JSON or STAR)
             job_details = {
-                "job_name": job_name, 
+                "job_name": job_name,
                 "job_path": os.path.abspath(job_path),
-                "creation_date": creation_date.strftime("%Y-%m-%d %H:%M:%S")
+                "creation_date": creation_date.strftime("%Y-%m-%d %H:%M:%S"),
             }
-            
+
             if file.endswith(".json"):
                 try:
                     with open(job_path, "r") as f:
@@ -145,128 +233,9 @@ def parse_relion_jobs(project_dir):
                 except Exception as e:
                     logger.warning(f"Error reading JSON file {job_path}: {str(e)}")
 
-            # --- Find input/output job relationships ---
-            input_jobs = []
-            output_jobs = []
-
-            # --- Locate and load default_pipeline.star or pipeline.star ---
-            possible_pipelines = [
-                os.path.join(project_dir, "default_pipeline.star"),
-                os.path.join(project_dir, "pipeline.star"),
-            ]
-            pipeline_path = next((p for p in possible_pipelines if os.path.exists(p)), None)
-
-            if pipeline_path not in pipeline_cache:
-                if pipeline_path:
-                    try:
-                        pipeline_cache[pipeline_path] = starfile.read(pipeline_path)
-                        logger.debug(f"Cached pipeline file: {pipeline_path}")
-                    except Exception as e:
-                        logger.warning(f"Error reading pipeline file {pipeline_path}: {str(e)}")
-                        pipeline_cache[pipeline_path] = None
-                else:
-                    pipeline_cache[project_dir] = None
-
-            pipeline_data = pipeline_cache.get(pipeline_path)
-
-            # --- Parse edges directly from your default_pipeline.star structure ---
-            if isinstance(pipeline_data, dict):
-                processes = (
-                    pipeline_data.get("data_pipeline_processes")
-                    or pipeline_data.get("pipeline_processes")
-                )
-                edges = (
-                    pipeline_data.get("data_pipeline_input_edges")
-                    or pipeline_data.get("pipeline_input_edges")
-                )
-
-                if processes is not None and edges is not None:
-                    try:
-                        # current job name, e.g. 'job003'
-                        current_job_id = job_name.split("/")[-1]
-                        # full process name, e.g. 'CtfFind/job003/' (with trailing slash)
-                        current_proc_full = processes[
-                            processes["rlnPipeLineProcessName"].str.endswith(current_job_id + "/")
-                        ]
-                        if not current_proc_full.empty:
-                            process_name = current_proc_full["rlnPipeLineProcessName"].iloc[0]
-
-                            # 1️⃣ find all edges that *point to* this job (inputs)
-                            for _, edge in edges.iterrows():
-                                to_proc = edge["rlnPipeLineEdgeProcess"].strip()
-                                if to_proc.rstrip("/") == process_name.rstrip("/"):
-                                    from_node = edge["rlnPipeLineEdgeFromNode"].strip()
-                                    # Extract upstream job like 'MotionCorr/job002'
-                                    parts = from_node.split("/")
-                                    if len(parts) >= 2:
-                                        from_job = f"{parts[0]}/{parts[1]}"
-                                        if from_job not in input_jobs:
-                                            input_jobs.append(from_job)
-
-                            # 2️⃣ find all edges that *originate* from this job (outputs)
-                            for _, edge in edges.iterrows():
-                                from_node = edge["rlnPipeLineEdgeFromNode"].strip()
-                                if from_node.startswith(process_name.rstrip("/")):
-                                    to_proc = edge["rlnPipeLineEdgeProcess"].strip()
-                                    parts = to_proc.split("/")
-                                    if len(parts) >= 2:
-                                        to_job = f"{parts[0]}/{parts[1]}"
-                                        if to_job not in output_jobs:
-                                            output_jobs.append(to_job)
-
-                        logger.debug(
-                            f"Job {job_name}: inputs={input_jobs}, outputs={output_jobs}"
-                        )
-
-                    except Exception as e:
-                        logger.warning(f"Error parsing default_pipeline.star for {job_name}: {str(e)}")
-
-            job_details["input_jobs"] = input_jobs
-            job_details["output_jobs"] = output_jobs
-
-
-            
-            # Use cached pipeline data if available
-            if pipeline_path:
-                if pipeline_path not in pipeline_cache:
-                    try:
-                        pipeline_cache[pipeline_path] = starfile.read(pipeline_path)
-                        logger.debug(f"Cached pipeline file: {pipeline_path}")
-                    except Exception as e:
-                        logger.warning(f"Error reading pipeline file {pipeline_path}: {str(e)}")
-                        pipeline_cache[pipeline_path] = None
-            else:
-                logger.warning("No pipeline.star or default_pipeline.star found in project root")
-                pipeline_cache[project_dir] = None
-            
-            # pipeline_data = pipeline_cache.get(pipeline_path)
-            # if pipeline_data and "pipeline_processes" in pipeline_data:
-            #     try:
-            #         processes = pipeline_data["pipeline_processes"]
-            #         current_job_id = job_name.split("/")[-1]
-            #         job_row = processes[processes["rlnPipeLineProcessName"].str.endswith(current_job_id)]
-            #         if not job_row.empty:
-            #             # Get input edges for this job from the process_edges table if available
-            #             if "pipeline_input_edges" in pipeline_data:
-            #                 edges = pipeline_data["pipeline_input_edges"]
-            #                 # Get process ID for current job
-            #                 process_id = job_row["rlnPipeLineProcessID"].iloc[0]
-            #                 # Find input edges that connect to this process
-            #                 input_edges = edges[edges["rlnPipeLineProcessToID"] == process_id]
-                            
-            #                 # Get the corresponding input job names
-            #                 for _, edge in input_edges.iterrows():
-            #                     from_id = edge["rlnPipeLineProcessFromID"]
-            #                     from_job = processes[processes["rlnPipeLineProcessID"] == from_id]
-            #                     if not from_job.empty:
-            #                         input_job_name = from_job["rlnPipeLineProcessName"].iloc[0]
-            #                         input_jobs.append(input_job_name)
-            #                 logger.debug(f"Job {job_name} - found {len(input_jobs)} input jobs: {input_jobs}")
-
-            #     except Exception as e:
-            #         logger.warning(f"Error parsing pipeline.star for {job_name}: {str(e)}")
-
-            # job_details["input_jobs"] = input_jobs
+            job_details["input_jobs"] = input_lookup.get(process_key, [])
+            job_details["output_jobs"] = output_lookup.get(process_key, [])
+            logger.debug(f"Job {job_name}: inputs={job_details['input_jobs']}, outputs={job_details['output_jobs']}")
 
             # Parse note.txt for command line parameters
             note_path = os.path.join(root, "note.txt")
@@ -288,45 +257,22 @@ def parse_relion_jobs(project_dir):
                                         key = part.lstrip("--")
                                         value = parts[i + 1] if (i + 1 < len(parts) and not parts[i + 1].startswith("--")) else "True"
                                         settings[key] = value
-                    
                     job_details["settings"] = settings
-                    
-                    # Extract any user notes from the note.txt file
                     job_details["user_notes"] = note_content.strip()
                 except Exception as e:
                     logger.warning(f"Error parsing note.txt for {job_name}: {str(e)}")
 
-            # Add job-type specific tags
-            tags = ["relion", job_type.lower(), "cryo-em"]
-            
-            # Add additional tags based on job characteristics
-            if "Micrograph" in job_type or job_type == "Motion_Corr":
-                tags.append("micrograph-processing")
-            elif job_type in ["Class2D", "Class3D"]:
-                tags.append("classification")
-            elif job_type == "Refine3D":
-                tags.append("refinement")
-            elif job_type == "Extract":
-                tags.append("particle-extraction")
-            elif job_type in ["ManualPick", "AutoPick"]:
-                tags.append("picking")
-            
-            # Add resolution tag for specific job types
-            if job_type in ["Refine3D", "PostProcess"]:
-                if "settings" in job_details and "angpix" in job_details["settings"]:
-                    tags.append("resolution")
-            
-            job_details["tags"] = tags
-            
+            job_details["tags"] = _build_tags(job_type, job_details)
+
             job_count += 1
             yield {"name": job_name, "details": job_details, "type": job_type}
-            
+
         except Exception as e:
             error_count += 1
             logger.error(f"Error processing job {job_name}: {str(e)}")
             logger.debug(traceback.format_exc())
-    
-    logger.info(f"Processed {job_count} jobs with {error_count} errors")
+
+    logger.info(f"Processed {job_count} jobs, skipped {skipped_count} already-complete, {error_count} errors")
 
 def normalize(img):
     """Normalize image values to [0,1] range"""
@@ -1918,7 +1864,7 @@ def main():
         
         # Read all job data first to build the complete relationship graph
         logger.info("Parsing RELION project directory...")
-        jobs = list(parse_relion_jobs(args.project_dir))
+        jobs = list(parse_relion_jobs(args.project_dir, output_dir=args.output_dir, force=args.force))
         logger.info(f"Found {len(jobs)} jobs.")
         
         # Create or update notes with links between jobs
