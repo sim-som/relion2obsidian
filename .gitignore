@@ -4,3 +4,4 @@ push_to_jureca.sh
 test_vis_class3d.py
 __pycache__/rel2obsi_beta.cpython-314.pyc
 test_output
+examples/

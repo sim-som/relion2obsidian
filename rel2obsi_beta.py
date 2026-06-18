@@ -902,6 +902,188 @@ def generate_class3d_visualization(job_dir, out_dir, job_name):
         logger.debug(traceback.format_exc())
         return None
     
+def generate_postprocess_visualization(job_dir, out_dir, job_name):
+    """Generate visualization for PostProcess job: masked map slices + FSC + Guinier plot."""
+    try:
+        job_dir = Path(job_dir)
+        if job_dir.is_file():
+            job_dir = job_dir.parent
+
+        success_file = job_dir / "RELION_JOB_EXIT_SUCCESS"
+        if not success_file.exists():
+            logger.debug(f"PostProcess job {job_name} not yet complete - skipping visualization")
+            return None
+
+        job_nr = job_dir.name
+        star_path = job_dir / "postprocess.star"
+        masked_map_path = job_dir / "postprocess_masked.mrc"
+
+        if not star_path.exists() or not masked_map_path.exists():
+            logger.warning(f"Missing postprocess.star or postprocess_masked.mrc in {job_dir}")
+            return None
+
+        star_data = starfile.read(star_path)
+
+        # Read general metadata
+        general = star_data.get("general", {})
+        if hasattr(general, 'iloc'):
+            final_resolution = float(general["rlnFinalResolution"].iloc[0])
+            bfactor = float(general["rlnBfactorUsedForSharpening"].iloc[0])
+        else:
+            final_resolution = float(general.get("rlnFinalResolution", float("nan")))
+            bfactor = float(general.get("rlnBfactorUsedForSharpening", float("nan")))
+
+        fsc_df = star_data["fsc"]
+        guinier_df = star_data["guinier"]
+
+        with mrcfile.open(masked_map_path, permissive=True) as mrc:
+            map_arr = normalize(mrc.data)
+
+        mid_z = map_arr.shape[0] // 2
+        mid_y = map_arr.shape[1] // 2
+        mid_x = map_arr.shape[2] // 2
+
+        fig = plt.figure(figsize=(15, 14))
+        gs = GridSpec(3, 3, figure=fig, height_ratios=[1, 1.2, 1.2])
+
+        # Map slices
+        ax_z = fig.add_subplot(gs[0, 0])
+        ax_y = fig.add_subplot(gs[0, 1])
+        ax_x = fig.add_subplot(gs[0, 2])
+
+        ax_z.imshow(map_arr[mid_z, :, :], cmap='gray')
+        ax_z.set_title("Z slice (sharpened, masked)")
+        ax_z.axis('off')
+
+        ax_y.imshow(map_arr[:, mid_y, :], cmap='gray')
+        ax_y.set_title("Y slice (sharpened, masked)")
+        ax_y.axis('off')
+
+        ax_x.imshow(map_arr[:, :, mid_x], cmap='gray')
+        ax_x.set_title("X slice (sharpened, masked)")
+        ax_x.axis('off')
+
+        # FSC plot
+        ax_fsc = fig.add_subplot(gs[1, :])
+        ang_res = fsc_df["rlnAngstromResolution"].values
+        # x-axis: 1/resolution (spatial frequency) — avoids infinity at index 0
+        inv_res = 1.0 / np.where(ang_res > 0, ang_res, np.inf)
+
+        ax_fsc.plot(inv_res, fsc_df["rlnFourierShellCorrelationCorrected"], label="FSC corrected", color="tab:blue", lw=1.5)
+        ax_fsc.plot(inv_res, fsc_df["rlnFourierShellCorrelationMaskedMaps"], label="FSC masked", color="tab:orange", lw=1.5, ls="--")
+        ax_fsc.plot(inv_res, fsc_df["rlnFourierShellCorrelationUnmaskedMaps"], label="FSC unmasked", color="tab:green", lw=1.5, ls=":")
+        ax_fsc.plot(inv_res, fsc_df["rlnCorrectedFourierShellCorrelationPhaseRandomizedMaskedMaps"],
+                    label="Phase-randomized (noise)", color="gray", lw=1, ls="-.")
+
+        ax_fsc.axhline(0.143, color="black", lw=1, ls="--", label="FSC = 0.143")
+        ax_fsc.axvline(1.0 / final_resolution, color="red", lw=1, ls="--",
+                       label=f"Resolution = {final_resolution:.2f} Å")
+
+        # x-ticks as Å labels at sensible positions
+        tick_angstroms = [a for a in [50, 20, 10, 8, 6, 5, 4, 3, 2.5, 2]
+                          if a >= final_resolution * 0.8]
+        tick_positions = [1.0 / a for a in tick_angstroms]
+        ax_fsc.set_xticks(tick_positions)
+        ax_fsc.set_xticklabels([f"{a} Å" for a in tick_angstroms])
+        ax_fsc.set_xlim(left=0)
+        ax_fsc.set_ylim(-0.1, 1.05)
+        ax_fsc.set_xlabel("Resolution")
+        ax_fsc.set_ylabel("Fourier Shell Correlation")
+        ax_fsc.set_title("FSC Curves")
+        ax_fsc.legend(loc="upper right", fontsize=8)
+        ax_fsc.grid(alpha=0.3)
+
+        # Guinier plot — mask out sentinel -99 values
+        ax_guin = fig.add_subplot(gs[2, :])
+        res_sq = guinier_df["rlnResolutionSquared"].values
+        log_orig = guinier_df["rlnLogAmplitudesOriginal"].values
+        log_weighted = guinier_df["rlnLogAmplitudesWeighted"].values
+        log_sharp = guinier_df["rlnLogAmplitudesSharpened"].values
+        log_intercept = guinier_df["rlnLogAmplitudesIntercept"].values
+
+        valid_w = log_weighted > -90
+        valid_s = log_sharp > -90
+
+        ax_guin.plot(res_sq, log_orig, label="Original", color="tab:blue", lw=1.5)
+        ax_guin.plot(res_sq[valid_w], log_weighted[valid_w], label="Weighted", color="tab:orange", lw=1.5, ls="--")
+        ax_guin.plot(res_sq[valid_s], log_sharp[valid_s], label="Sharpened", color="tab:green", lw=1.5, ls=":")
+        ax_guin.plot(res_sq, log_intercept, label=f"Fitted line (B={bfactor:.1f} Å²)", color="red", lw=1, ls="-.")
+
+        ax_guin.set_xlabel("Resolution² (1/Å²)")
+        ax_guin.set_ylabel("log(Amplitude)")
+        ax_guin.set_title("Guinier Plot")
+        ax_guin.legend(loc="lower left", fontsize=8)
+        ax_guin.grid(alpha=0.3)
+
+        fig.suptitle(f"PostProcess: {job_name} — Resolution: {final_resolution:.2f} Å", fontsize=14)
+        fig.tight_layout(rect=[0, 0, 1, 0.96])
+
+        rel_output_path = f"assets/PostProcess_{job_nr}_analysis.png"
+        output_path = Path(out_dir) / rel_output_path
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        fig.savefig(output_path, dpi=150, bbox_inches='tight')
+        plt.close(fig)
+
+        logger.info(f"Created PostProcess visualization: {output_path}")
+        return rel_output_path
+
+    except Exception as e:
+        logger.error(f"Error generating PostProcess visualization for {job_dir}: {str(e)}")
+        logger.debug(traceback.format_exc())
+        return None
+
+
+def batch_generate_postprocess_visualizations(postprocess_jobs, output_dir, force=False, max_workers=2, update_incomplete=False, incomplete_jobs=None):
+    """Generate PostProcess visualizations in parallel."""
+    postprocess_visualizations = {}
+    if incomplete_jobs is None:
+        incomplete_jobs = set()
+
+    def process_single_postprocess(job):
+        try:
+            job_dir = Path(job["details"].get("job_path", ""))
+            if job_dir.is_file():
+                job_dir = job_dir.parent
+            job_nr = job_dir.name
+
+            expected_vis_path = f"assets/PostProcess_{job_nr}_analysis.png"
+            full_vis_path = Path(output_dir) / expected_vis_path
+
+            success_file = job_dir / "RELION_JOB_EXIT_SUCCESS"
+            job_is_complete = success_file.exists()
+            should_regenerate = update_incomplete and (
+                not job_is_complete or job['name'] in incomplete_jobs
+            )
+
+            if full_vis_path.exists() and not force and not should_regenerate:
+                logger.debug(f"PostProcess visualization already exists: {expected_vis_path}")
+                return job['name'], expected_vis_path
+
+            vis_path = generate_postprocess_visualization(
+                job["details"].get("job_path", ""),
+                output_dir,
+                job['name']
+            )
+            return job['name'], vis_path
+
+        except Exception as e:
+            logger.error(f"Error in parallel processing of PostProcess {job['name']}: {str(e)}")
+            return job['name'], None
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(process_single_postprocess, job): job for job in postprocess_jobs}
+        for future in tqdm(as_completed(futures), total=len(futures), desc="Processing PostProcess visualizations"):
+            try:
+                job_name, vis_path = future.result()
+                if vis_path:
+                    postprocess_visualizations[job_name] = vis_path
+            except Exception as e:
+                job = futures[future]
+                logger.error(f"Error processing PostProcess job {job['name']}: {str(e)}")
+
+    return postprocess_visualizations
+
+
 def batch_generate_refine3d_visualizations(refine3d_jobs, output_dir, force=False, max_workers=2, update_incomplete=False, incomplete_jobs=None):
     """Generate Refine3D visualizations in parallel"""
     refine3d_visualizations = {}
@@ -1028,6 +1210,43 @@ def get_job_note_filename(job):
     # Sanitize filename to avoid issues in different file systems
     safe_name = re.sub(r'[\\/*?:"<>|]', "_", job['name'])
     return f"{safe_name}_{job['type']}.md"
+
+def parse_postprocess_star(job_dir):
+    """Parse postprocess.star to extract final resolution and B-factor."""
+    result = {}
+    star_path = Path(job_dir) / "postprocess.star"
+    if not star_path.exists():
+        return result
+    try:
+        star_data = starfile.read(star_path)
+        general = star_data.get("general", {})
+        if hasattr(general, 'iloc'):
+            result['fsc_resolution'] = float(general["rlnFinalResolution"].iloc[0])
+            result['b_factor'] = float(general["rlnBfactorUsedForSharpening"].iloc[0])
+        else:
+            if "rlnFinalResolution" in general:
+                result['fsc_resolution'] = float(general["rlnFinalResolution"])
+            if "rlnBfactorUsedForSharpening" in general:
+                result['b_factor'] = float(general["rlnBfactorUsedForSharpening"])
+    except Exception as e:
+        logger.warning(f"Error parsing postprocess.star in {job_dir}: {str(e)}")
+    return result
+
+
+def parse_refine3d_fsc_resolution(job_dir):
+    """Parse run_model.star to extract FSC resolution for Refine3D jobs."""
+    result = {}
+    model_star_path = Path(job_dir) / "run_model.star"
+    if not model_star_path.exists():
+        return result
+    try:
+        model_dict = starfile.read(model_star_path)
+        val = model_dict["model_general"]["rlnCurrentResolution"]
+        result['fsc_resolution'] = float(val.iloc[0] if hasattr(val, 'iloc') else val)
+    except Exception as e:
+        logger.warning(f"Error parsing run_model.star in {job_dir}: {str(e)}")
+    return result
+
 
 def parse_refine3d_runout(job_dir):
     """Parse run.out file for Refine3D jobs to extract resolution and helical parameters"""
@@ -1361,6 +1580,11 @@ def create_obsidian_notes(jobs, output_dir, project_dir, force=False, plot=False
             if job['type'] == 'Refine3D':
                 refine_data = parse_refine3d_runout(job_dir)
                 job['details'].update(refine_data)
+                job['details'].update(parse_refine3d_fsc_resolution(job_dir))
+
+            # PostProcess specific parsing
+            elif job['type'] == 'PostProcess':
+                job['details'].update(parse_postprocess_star(job_dir))
             
             # Select specific parsing
             elif job['type'] == 'Select':
@@ -1389,6 +1613,7 @@ def create_obsidian_notes(jobs, output_dir, project_dir, force=False, plot=False
         class2d_montages = {}
         refine3d_visualizations = {}
         class3d_visualizations = {}
+        postprocess_visualizations = {}
 
         if plot:
             # Generate Class2D images before creating notes (parallel processing)
@@ -1408,6 +1633,12 @@ def create_obsidian_notes(jobs, output_dir, project_dir, force=False, plot=False
             class3d_jobs = [j for j in all_jobs.values() if j['type'] == 'Class3D']
             class3d_visualizations = batch_generate_class3d_visualizations(class3d_jobs, output_dir, force, max_workers=2,
                                                                            update_incomplete=update_incomplete, incomplete_jobs=incomplete_jobs)
+
+            # Generate PostProcess visualizations
+            logger.info("Checking PostProcess visualizations...")
+            postprocess_jobs = [j for j in all_jobs.values() if j['type'] == 'PostProcess']
+            postprocess_visualizations = batch_generate_postprocess_visualizations(postprocess_jobs, output_dir, force, max_workers=2,
+                                                                                   update_incomplete=update_incomplete, incomplete_jobs=incomplete_jobs)
         else:
             logger.info("Skipping visualizations (use --plot to generate)")
 
@@ -1481,11 +1712,20 @@ def create_obsidian_notes(jobs, output_dir, project_dir, force=False, plot=False
                     if job['type'] == 'Refine3D':
                         if 'resolution' in job['details']:
                             f.write(f"resolution: {job['details']['resolution']:.2f}\n")
+                        if 'fsc_resolution' in job['details']:
+                            f.write(f"fsc_resolution: {job['details']['fsc_resolution']:.2f}\n")
                         if 'refined_twist' in job['details']:
                             f.write(f"refined_twist: {job['details']['refined_twist']:.5f}\n")
                         if 'refined_rise' in job['details']:
                             f.write(f"refined_rise: {job['details']['refined_rise']:.5f}\n")
-                    
+
+                    # PostProcess specific properties
+                    if job['type'] == 'PostProcess':
+                        if 'fsc_resolution' in job['details']:
+                            f.write(f"fsc_resolution: {job['details']['fsc_resolution']:.2f}\n")
+                        if 'b_factor' in job['details']:
+                            f.write(f"b_factor: {job['details']['b_factor']:.2f}\n")
+
                     # Select specific properties
                     if job['type'] == 'Select':
                         if 'particle_count' in job['details']:
@@ -1536,6 +1776,13 @@ def create_obsidian_notes(jobs, output_dir, project_dir, force=False, plot=False
                         if vis_path:
                             f.write("# Plots\n")
                             f.write(f"![Class3D Analysis]({vis_path})\n\n")
+
+                    ## Add PostProcess visualization if available
+                    if job['type'] == 'PostProcess':
+                        vis_path = postprocess_visualizations.get(job['name'])
+                        if vis_path:
+                            f.write("# Plots\n")
+                            f.write(f"![PostProcess Analysis]({vis_path})\n\n")
 
                     # User notes section at the end if available
                     if 'user_notes' in job['details'] and job['details']['user_notes'].strip():
