@@ -1800,7 +1800,8 @@ def create_obsidian_notes(jobs, output_dir, project_dir, force=False, plot=False
                         "K", "tau2_fudge",
                         "particle_diameter", "helical_outer_diameter",
                         "ctf_intact_first_peak", "no_init_blobs", "ctf",         # Special settings for classifying amyloids/fibrils
-                        "psi_step", "sigma_psi", "oversampling", "healpix_order",
+                        "psi_step", "sigma_psi", 
+                        "oversampling", "healpix_order", "auto_local_healpix_order",     # Check Sampling For refine 3D: healpix order is the inital sampling. If healpix_order = auto_local_healpix_order -> only Local searches. Usually oversampling = 1 (imposed by GUI). Actual sampling set in GUI = hpix-order + oversampling. 
                         "ini_high",     # initial low pass filter
                         "sym", "helical_twist_initial",
                         "helical_rise_initial", "helical_symmetry_search",
