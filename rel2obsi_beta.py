@@ -96,7 +96,7 @@ def _build_tags(job_type, job_details=None):
     return tags
 
 
-def parse_relion_jobs(project_dir, output_dir=None, force=False):
+def parse_relion_jobs(project_dir, output_dir=None, force=False, incomplete_jobs=None):
     """
     Parses the RELION project directory to extract job information.
     Optimized to reduce RAM usage by streaming file processing.
@@ -104,6 +104,9 @@ def parse_relion_jobs(project_dir, output_dir=None, force=False):
     :param project_dir: Path to the RELION project directory.
     :param output_dir: Output directory for Obsidian notes (used to skip already-complete jobs on reruns).
     :param force: Re-process all jobs even if notes already exist.
+    :param incomplete_jobs: Set of job names that were previously tracked as incomplete — these are
+                            never skipped even if they now have a note and RELION_JOB_EXIT_SUCCESS,
+                            so their full details (settings, note.txt, etc.) are re-parsed.
     :return: Generator yielding job dictionaries.
     """
     if not os.path.isdir(project_dir):
@@ -195,7 +198,7 @@ def parse_relion_jobs(project_dir, output_dir=None, force=False):
                 safe_name = re.sub(r'[\\/*?:"<>|]', "_", job_name)
                 note_filename = f"{safe_name}_{job_type}.md"
                 success_file = os.path.join(root, "RELION_JOB_EXIT_SUCCESS")
-                if note_filename in existing_notes and os.path.exists(success_file):
+                if note_filename in existing_notes and os.path.exists(success_file) and job_name not in (incomplete_jobs or set()):
                     creation_time = os.path.getctime(job_path)
                     creation_date = datetime.datetime.fromtimestamp(creation_time)
                     skipped_count += 1
@@ -2111,7 +2114,11 @@ def main():
         
         # Read all job data first to build the complete relationship graph
         logger.info("Parsing RELION project directory...")
-        jobs = list(parse_relion_jobs(args.project_dir, output_dir=args.output_dir, force=args.force))
+        # Load previously-tracked incomplete jobs so parse_relion_jobs never applies
+        # the early-skip optimisation to them (they need full re-parsing).
+        previously_incomplete = load_incomplete_jobs(args.output_dir)
+        jobs = list(parse_relion_jobs(args.project_dir, output_dir=args.output_dir, force=args.force,
+                                      incomplete_jobs=previously_incomplete))
         logger.info(f"Found {len(jobs)} jobs.")
         
         # Create or update notes with links between jobs
