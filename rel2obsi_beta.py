@@ -932,9 +932,13 @@ def generate_postprocess_visualization(job_dir, out_dir, job_name):
         if hasattr(general, 'iloc'):
             final_resolution = float(general["rlnFinalResolution"].iloc[0])
             bfactor = float(general["rlnBfactorUsedForSharpening"].iloc[0])
+            guinier_slope = float(general["rlnFittedSlopeGuinierPlot"].iloc[0])
+            guinier_intercept = float(general["rlnFittedInterceptGuinierPlot"].iloc[0])
         else:
             final_resolution = float(general.get("rlnFinalResolution", float("nan")))
             bfactor = float(general.get("rlnBfactorUsedForSharpening", float("nan")))
+            guinier_slope = float(general.get("rlnFittedSlopeGuinierPlot", float("nan")))
+            guinier_intercept = float(general.get("rlnFittedInterceptGuinierPlot", float("nan")))
 
         fsc_df = star_data["fsc"]
         guinier_df = star_data["guinier"]
@@ -1002,16 +1006,24 @@ def generate_postprocess_visualization(job_dir, out_dir, job_name):
         log_orig = guinier_df["rlnLogAmplitudesOriginal"].values
         log_weighted = guinier_df["rlnLogAmplitudesWeighted"].values
         log_sharp = guinier_df["rlnLogAmplitudesSharpened"].values
-        log_intercept = guinier_df["rlnLogAmplitudesIntercept"].values
 
         valid_w = log_weighted > -90
         valid_s = log_sharp > -90
 
+        # x-axis capped at the FSC resolution — same upper limit RELION uses for the B-factor fit
+        res_sq_max = (1.0 / final_resolution) ** 2
+
+        # rlnLogAmplitudesIntercept in the star file is just the constant intercept repeated
+        # per row (not intercept + slope*x), so reconstruct the actual fitted line ourselves.
+        fit_res_sq = res_sq[res_sq <= res_sq_max]
+        fit_line = guinier_intercept + guinier_slope * fit_res_sq
+
         ax_guin.plot(res_sq, log_orig, label="Original", color="tab:blue", lw=1.5)
         ax_guin.plot(res_sq[valid_w], log_weighted[valid_w], label="Weighted", color="tab:orange", lw=1.5, ls="--")
         ax_guin.plot(res_sq[valid_s], log_sharp[valid_s], label="Sharpened", color="tab:green", lw=1.5, ls=":")
-        ax_guin.plot(res_sq, log_intercept, label=f"Fitted line (B={bfactor:.1f} Å²)", color="red", lw=1, ls="-.")
+        ax_guin.plot(fit_res_sq, fit_line, label=f"Fitted line (B={bfactor:.1f} Å²)", color="red", lw=1.5, ls="-.")
 
+        ax_guin.set_xlim(0, res_sq_max)
         ax_guin.set_xlabel("Resolution² (1/Å²)")
         ax_guin.set_ylabel("log(Amplitude)")
         ax_guin.set_title("Guinier Plot")
